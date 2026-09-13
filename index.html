@@ -108,6 +108,7 @@
   .syncbtn{display:block;width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;font-weight:500;font-size:14.5px}
   .syncbtn[hidden]{display:none}
   .syncstate{font-size:12.5px;color:var(--muted);margin:9px 0 0}
+  .build{font-size:11px;color:var(--muted);text-align:center;margin:22px 0 0;opacity:.75;font-variant-numeric:tabular-nums}
   .exportall{display:block;width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px;font-weight:500;font-size:14.5px;margin-top:4px}
   .exportall:active{transform:scale(.99)}
   .empty{color:var(--muted);font-size:13.5px;background:var(--card);border:1px dashed var(--line);border-radius:var(--r);padding:16px}
@@ -172,6 +173,8 @@
   <p class="syncstate" id="syncState"></p>
 </section>
 
+<p class="build" id="build"></p>
+
 <div class="bar" id="bar" hidden>
   <div class="inner">
     <button class="save" id="save">Save session</button>
@@ -186,6 +189,10 @@ const KEY = 'training-log-v1';
 /* Kept out of the log blob, and deliberately out of the repo: the relay URL is
    typed in on the device, so a public source tree never carries the endpoint. */
 const RELAY_KEY = 'training-log-relay';
+/* Shown at the foot of the page. The phone is the only place this runs and I
+   can't inspect it, so the app has to be able to state its own version and
+   whether a relay is stored. */
+const BUILD = 'v8';
 const PLAN = {
   A: {name:'Pull & hinge', flag:false, moves:[
     {n:'Weighted pull-up',       t:'4 × 5–8'},
@@ -456,7 +463,16 @@ function saveSession(){
   pushPending(false);   // fire and forget; the save above already succeeded
 }
 
+function paintBuild(){
+  const relay = getRelay();
+  $('build').textContent = 'build ' + BUILD + ' · '
+    + (relay ? 'relay set' : 'no relay')
+    + ' · ' + state.sessions.length + ' saved'
+    + ' · ' + unsynced().length + ' unsynced';
+}
+
 function paintSync(){
+  paintBuild();
   const relay = getRelay(), n = unsynced().length;
   const typed = $('relay').value.trim();
   $('syncNow').hidden = !n || !(relay || relayOk(typed));
