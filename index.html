@@ -226,11 +226,15 @@ const RELAY_KEY = 'training-log-relay';
 /* Shown at the foot of the page. The phone is the only place this runs and I
    can't inspect it, so the app has to be able to state its own version and
    whether a relay is stored. */
-const BUILD = 'v12';
+const BUILD = 'v13';
 /* Declared here, not beside the registration code at the foot of the script:
    paintBuild() reads it during init() and a `let` further down puts it in the
    temporal dead zone, which threw and took the whole sync panel with it. */
 let swOk = null;
+let pendingReload = false;
+/* Only a *change* of controller means a new version took over. On a first ever
+   load the controller arrives from nothing, and reloading for that is a loop. */
+const hadController = 'serviceWorker' in navigator && !!navigator.serviceWorker.controller;
 /* sets/lo/hi drive both the display and the Low/Mid/Top fill.
    kind picks the double-progression step from the routine page: 2.5kg upper,
    5kg lower. cue is the one-line coaching note from that same page. */
@@ -326,6 +330,22 @@ async function pushOne(s){
 /* Only ever one run at a time. A session is marked synced after its POST
    resolves, so two overlapping runs would both see it as pending and write it
    twice - a duplicate row in Notion, which is the one thing this must not do. */
+/* The worker installs the new version in the background, but this page was
+   already rendered from the old cache - which is why an update used to appear
+   only on the launch after the one that fetched it. skipWaiting means the new
+   worker takes control immediately, so take that as the cue to re-render.
+   Never mid-entry: a reload while you are typing is worse than being a version
+   behind, so it waits for the save. */
+function applyUpdate(){
+  if(pendingReload) return;
+  pendingReload = true;
+  if(active && dirty()){
+    toast('Update ready — it will apply once you save');
+    return;
+  }
+  location.reload();
+}
+
 let pushing = false;
 /* Never throws, never blocks a save. Reports what happened and repaints. */
 async function pushPending(loud){
@@ -554,6 +574,7 @@ function saveSession(){
   window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
   paintSync();
   pushPending(false);   // fire and forget; the save above already succeeded
+  if(pendingReload) setTimeout(()=>location.reload(), 2500);   // deferred update
 }
 
 function paintBuild(){
@@ -677,8 +698,19 @@ function warnEphemeral(why){
   paintBuild();
 }
 if('serviceWorker' in navigator){
+  navigator.serviceWorker.addEventListener('controllerchange', ()=>{
+    if(hadController) applyUpdate();
+  });
   window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('./sw.js').then(()=>{ swOk = true; paintBuild(); })
+    navigator.serviceWorker.register('./sw.js').then(reg=>{
+      swOk = true; paintBuild();
+      reg.addEventListener('updatefound', ()=>{
+        const nw = reg.installing;
+        if(nw) nw.addEventListener('statechange', ()=>{
+          if(nw.state === 'activated' && hadController) applyUpdate();
+        });
+      });
+    })
       .catch(()=>{
         swOk = false;
         warnEphemeral('This browser refused to store the app offline, which on iOS means Private Browsing.');
