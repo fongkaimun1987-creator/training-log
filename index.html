@@ -23,6 +23,10 @@
     --a-soft:#E4EDF4;
     --b:#AC5019;
     --b-soft:#F6E9DF;
+    --c:#3F6B45;
+    --c-soft:#E3EFE5;
+    --d:#5A4A7C;
+    --d-soft:#EBE6F3;
     --ok:#2E6B4F;
     --r:14px;
   }
@@ -46,6 +50,11 @@
 
   /* choice */
   .choose{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .choose.alt{margin-top:10px}
+  .choose.alt .pick{min-height:0;padding:11px 13px 12px}
+  .choose.alt .pick.on{padding:10px 12px 11px}
+  .choose.alt .letter{font-size:21px}
+  .altnote{font-size:11.5px;color:var(--muted);margin:12px 0 0;text-align:center}
   .pick{
     background:var(--card);border:1px solid var(--line);border-radius:var(--r);
     padding:14px 14px 13px;text-align:left;display:block;min-height:104px;position:relative;
@@ -56,9 +65,12 @@
   .pick .what{display:block;font-size:13.5px;margin-top:3px}
   .pick .when{display:block;font-size:12.5px;color:var(--muted);margin-top:9px}
   .pick.a .letter{color:var(--a)} .pick.b .letter{color:var(--b)}
+  .pick.c .letter{color:var(--c)} .pick.d .letter{color:var(--d)}
   .pick.on{border-color:currentColor;border-width:2px;padding:13px 13px 12px}
   .pick.a.on{color:var(--a);background:var(--a-soft)}
   .pick.b.on{color:var(--b);background:var(--b-soft)}
+  .pick.c.on{color:var(--c);background:var(--c-soft)}
+  .pick.d.on{color:var(--d);background:var(--d-soft)}
   .pick.on .what,.pick.on .when{color:var(--ink)}
   .next{position:absolute;top:12px;right:12px;font-size:11px;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:2px 8px;background:#fff}
 
@@ -94,6 +106,7 @@
   .row .head{display:flex;align-items:center;gap:9px}
   .tag{font-weight:700;font-size:13px;width:24px;height:24px;border-radius:7px;display:grid;place-items:center;flex:none}
   .tag.a{background:var(--a-soft);color:var(--a)} .tag.b{background:var(--b-soft);color:var(--b)}
+  .tag.c{background:var(--c-soft);color:var(--c)} .tag.d{background:var(--d-soft);color:var(--d)}
   .stamp{font-size:13.5px;font-weight:500}
   .row .rest{margin-left:auto;font-size:12.5px;color:var(--muted)}
   .lifts{margin:9px 0 0;font-size:13px;color:#39413E;white-space:pre-wrap;line-height:1.55}
@@ -140,6 +153,20 @@
     <span class="when" id="whenB">not done yet</span>
   </button>
 </div>
+
+<div class="choose alt">
+  <button class="pick c" id="pickC" aria-pressed="false">
+    <span class="letter">C</span>
+    <span class="what">Full body</span>
+    <span class="when" id="whenC">not done yet</span>
+  </button>
+  <button class="pick d" id="pickD" aria-pressed="false">
+    <span class="letter">D</span>
+    <span class="what">Quick &amp; dirty</span>
+    <span class="when" id="whenD">not done yet</span>
+  </button>
+</div>
+<p class="altnote">C swaps in for an A or B day. D is the short one.</p>
 
 <div class="work" id="work" hidden>
   <div class="prefill">
@@ -196,7 +223,7 @@ const RELAY_KEY = 'training-log-relay';
 /* Shown at the foot of the page. The phone is the only place this runs and I
    can't inspect it, so the app has to be able to state its own version and
    whether a relay is stored. */
-const BUILD = 'v10';
+const BUILD = 'v11';
 /* Declared here, not beside the registration code at the foot of the script:
    paintBuild() reads it during init() and a `let` further down puts it in the
    temporal dead zone, which threw and took the whole sync panel with it. */
@@ -215,8 +242,22 @@ const PLAN = {
     {n:'Bulgarian split squat',  t:'3 × 8–10 / leg'},
     {n:'Lateral raise',          t:'3 × 12–15'},
     {n:'Weighted hanging leg raise', t:'3 × 8–12'}
+  ]},
+  /* C stands in for an A or B day. Horizontal push, bilateral squat, vertical
+     pull - the two patterns A/B never cover, plus the strongest lift. */
+  C: {name:'Full body', flag:true, moves:[
+    {n:'Push-up',                t:'3 × 12–20'},
+    {n:'Barbell back squat',     t:'3 × 6–10'},
+    {n:'Weighted pull-up',       t:'3 × 5–8'}
+  ]},
+  /* D is the short one: the two highest-value pulls and the hinge. */
+  D: {name:'Quick & dirty', flag:true, moves:[
+    {n:'Weighted pull-up',       t:'3 × 5–8'},
+    {n:'Barbell bent-over row',  t:'3 × 8–12'},
+    {n:'Romanian deadlift',      t:'2 × 8–10'}
   ]}
 };
+const TYPES = ['A','B','C','D'];
 
 let state = {sessions:[], draft:null};
 let active = null;
@@ -337,11 +378,13 @@ async function copy(text){
 function paintHeader(){
   const total = state.sessions.length;
   $('bank').textContent = total ? total + ' logged' : '';
-  ['A','B'].forEach(t=>{
+  TYPES.forEach(t=>{
     const l = last(t);
     $('when'+t).textContent = l ? 'last ' + ago(l.ts) : 'not done yet';
   });
-  const recent = state.sessions[0];
+  /* C and D sit outside the alternation - C substitutes for whichever of A or B
+     was due, and D is a top-up - so the pointer follows the last A or B only. */
+  const recent = state.sessions.find(s => s.type === 'A' || s.type === 'B');
   const due = recent ? (recent.type === 'A' ? 'B' : 'A') : 'A';
   $('nextA').hidden = due !== 'A';
   $('nextB').hidden = due !== 'B';
@@ -351,7 +394,7 @@ function choose(type){
   if(active === type){ return; }
   if(active && dirty() && !confirm('Switch session? What you typed will be cleared.')) return;
   active = type;
-  ['A','B'].forEach(t=>{
+  TYPES.forEach(t=>{
     const el = $('pick'+t);
     el.classList.toggle('on', t === type);
     el.setAttribute('aria-pressed', String(t === type));
@@ -467,7 +510,7 @@ function saveSession(){
   state.draft = null;
   persist();
   active = null;
-  ['A','B'].forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
+  TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
   $('work').hidden = true; $('bar').hidden = true;
   paintHeader(); paintLedger();
   toast('Session ' + s.type + ' saved — ' + stamp(s.ts));
@@ -524,8 +567,7 @@ function paintLedger(){
 }
 
 /* ---------- wire up ---------- */
-$('pickA').addEventListener('click', ()=>choose('A'));
-$('pickB').addEventListener('click', ()=>choose('B'));
+TYPES.forEach(t=> $('pick'+t).addEventListener('click', ()=>choose(t)));
 $('save').addEventListener('click', saveSession);
 function relayOk(v){
   // https everywhere, with the same loopback exemption browsers make for
@@ -572,7 +614,7 @@ $('cancel').addEventListener('click', ()=>{
   clearTimeout(dt);
   state.draft = null; persist();
   active = null;
-  ['A','B'].forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
+  TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
   $('work').hidden = true; $('bar').hidden = true;
 });
 

@@ -16,6 +16,15 @@
  * data_source_id on 2025-09-03. Set NOTION_DS to use the new path, NOTION_DB for
  * the old one, so a rejection on one doesn't mean rewriting this file. */
 const OLD_VERSION = '2022-06-28';
+
+/* Session letter -> the exact Notion select option name. Anything not in here
+ * is refused, so a typo can never quietly create a new select option. */
+const TYPE_NAMES = {
+  A: 'A - Pull/hinge',
+  B: 'B - Push/squat',
+  C: 'C - Full body',
+  D: 'D - Quick & dirty'
+};
 const NEW_VERSION = '2025-09-03';
 
 export default {
@@ -36,7 +45,9 @@ export default {
 
     // Shape check. This endpoint writes one row to one database and nothing
     // else, so anything that isn't a session is refused before Notion is touched.
-    if (body.type !== 'A' && body.type !== 'B') return json({ error: 'type must be A or B' }, 400, cors);
+    if (!Object.prototype.hasOwnProperty.call(TYPE_NAMES, body.type)) {
+      return json({ error: 'type must be one of ' + Object.keys(TYPE_NAMES).join(', ') }, 400, cors);
+    }
     if (!Array.isArray(body.lifts))             return json({ error: 'lifts must be an array' }, 400, cors);
     if (body.lifts.length > 20)                 return json({ error: 'too many lifts' }, 400, cors);
 
@@ -52,7 +63,7 @@ export default {
 
     const props = {
       'Session': { title: [{ text: { content: ts.slice(0, 10) + ' — Session ' + body.type } }] },
-      'Type':    { select: { name: body.type === 'A' ? 'A - Pull/hinge' : 'B - Push/squat' } },
+      'Type':    { select: { name: TYPE_NAMES[body.type] } },
       'Date':    { date: { start: ts } },
       'Lifts':   { rich_text: [{ text: { content: clip(liftText, 1900) } }] }
     };
