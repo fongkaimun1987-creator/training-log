@@ -108,6 +108,9 @@
   .syncbtn{display:block;width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;font-weight:500;font-size:14.5px}
   .syncbtn[hidden]{display:none}
   .syncstate{font-size:12.5px;color:var(--muted);margin:9px 0 0}
+  .warn{background:#FDECEC;border:1px solid #E5A3A3;color:#7A1F1F;border-radius:var(--r);padding:12px 13px;font-size:13.5px;line-height:1.45;margin:0 0 14px}
+  .warn[hidden]{display:none}
+  .warn b{font-weight:700}
   .build{font-size:11px;color:var(--muted);text-align:center;margin:22px 0 0;opacity:.75;font-variant-numeric:tabular-nums}
   .exportall{display:block;width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px;font-weight:500;font-size:14.5px;margin-top:4px}
   .exportall:active{transform:scale(.99)}
@@ -119,6 +122,7 @@
 </head>
 <body>
 
+<p class="warn" id="ephemeral" hidden></p>
 <div class="top"><h1>Training log</h1><span id="bank" class="stamp" style="color:var(--muted)"></span></div>
 <p class="sub">Pick today's session, fill what you lifted, save it. Held load is the win.</p>
 
@@ -192,7 +196,11 @@ const RELAY_KEY = 'training-log-relay';
 /* Shown at the foot of the page. The phone is the only place this runs and I
    can't inspect it, so the app has to be able to state its own version and
    whether a relay is stored. */
-const BUILD = 'v8';
+const BUILD = 'v10';
+/* Declared here, not beside the registration code at the foot of the script:
+   paintBuild() reads it during init() and a `let` further down puts it in the
+   temporal dead zone, which threw and took the whole sync panel with it. */
+let swOk = null;
 const PLAN = {
   A: {name:'Pull & hinge', flag:false, moves:[
     {n:'Weighted pull-up',       t:'4 × 5–8'},
@@ -441,12 +449,17 @@ let dt;
 function saveDraft(){
   $('save').disabled = !dirty();
   clearTimeout(dt);
-  dt = setTimeout(()=>{ state.draft = collect(); persist(); }, 600);
+  dt = setTimeout(()=>{
+    if(!active) return;        // saved or cleared while the timer was pending
+    state.draft = collect();
+    persist();
+  }, 600);
 }
 
 /* ---------- save + ledger ---------- */
 function saveSession(){
   if(!dirty()) return;
+  clearTimeout(dt);            // a pending draft write would resurrect this session
   const s = collect();
   s.ts = new Date().toISOString();
   s.id = s.ts + Math.random().toString(36).slice(2,6);
@@ -468,7 +481,8 @@ function paintBuild(){
   $('build').textContent = 'build ' + BUILD + ' · '
     + (relay ? 'relay set' : 'no relay')
     + ' · ' + state.sessions.length + ' saved'
-    + ' · ' + unsynced().length + ' unsynced';
+    + ' · ' + unsynced().length + ' unsynced'
+    + ' · ' + (swOk === null ? 'storage checking' : swOk ? 'storage ok' : 'STORAGE NOT KEPT');
 }
 
 function paintSync(){
@@ -555,6 +569,7 @@ $('exportAll').addEventListener('click', ()=>{
 });
 $('cancel').addEventListener('click', ()=>{
   if(dirty() && !confirm('Clear what you typed?')) return;
+  clearTimeout(dt);
   state.draft = null; persist();
   active = null;
   ['A','B'].forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
@@ -572,10 +587,34 @@ $('cancel').addEventListener('click', ()=>{
   }
 })();
 
+/* A failed registration was previously swallowed. On iOS it is the tell for
+   Private Browsing, where localStorage is discarded when the session ends -
+   so the silence cost a logged session. Say it out loud instead. */
+function warnEphemeral(why){
+  const el = $('ephemeral');
+  el.innerHTML = '<b>Nothing you log here will be kept.</b> ' + why +
+    ' Open this page in a normal Safari tab, or add it to your home screen, before logging anything.';
+  el.hidden = false;
+  paintBuild();
+}
 if('serviceWorker' in navigator){
   window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('./sw.js').catch(()=>{ /* offline shell unavailable; app still runs */ });
+    navigator.serviceWorker.register('./sw.js').then(()=>{ swOk = true; paintBuild(); })
+      .catch(()=>{
+        swOk = false;
+        warnEphemeral('This browser refused to store the app offline, which on iOS means Private Browsing.');
+      });
   });
+} else {
+  swOk = false;
+}
+
+/* Belt and braces: prove localStorage actually accepts a write. */
+try{
+  localStorage.setItem('training-log-probe', '1');
+  localStorage.removeItem('training-log-probe');
+}catch(e){
+  warnEphemeral('This browser will not let the app save to the device.');
 }
 </script>
 </body>
