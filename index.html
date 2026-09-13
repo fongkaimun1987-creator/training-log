@@ -100,6 +100,14 @@
   .acts{display:flex;gap:14px;margin-top:10px;font-size:12.5px;color:var(--muted)}
   .acts button{text-decoration:underline;text-underline-offset:3px}
   .exportall[hidden]{display:none}
+  .pending{font-size:11px;font-weight:600;color:var(--b);background:var(--b-soft);border-radius:20px;padding:2px 8px;margin-left:8px;white-space:nowrap}
+  .sync{margin-top:26px;border-top:1px solid var(--line);padding-top:16px}
+  .sync h2{font-size:15px;font-weight:600;margin:0 0 2px}
+  .sync .why{color:var(--muted);font-size:12.5px;margin:0 0 11px}
+  .sync input{margin-bottom:8px}
+  .syncbtn{display:block;width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;font-weight:500;font-size:14.5px}
+  .syncbtn[hidden]{display:none}
+  .syncstate{font-size:12.5px;color:var(--muted);margin:9px 0 0}
   .exportall{display:block;width:100%;background:#fff;border:1px solid var(--line);border-radius:12px;padding:13px;font-weight:500;font-size:14.5px;margin-top:4px}
   .exportall:active{transform:scale(.99)}
   .empty{color:var(--muted);font-size:13.5px;background:var(--card);border:1px dashed var(--line);border-radius:var(--r);padding:16px}
@@ -153,6 +161,17 @@
   <button class="exportall" id="exportAll" hidden>Copy all sessions</button>
 </section>
 
+<section class="sync">
+  <h2>Notion sync</h2>
+  <p class="why">Optional. Paste your relay URL to write each saved session to the Training Log
+  database. Saving never waits for it — if the write fails the session is still on this phone and
+  the row stays marked unsynced.</p>
+  <input id="relay" type="url" inputmode="url" autocomplete="off" autocapitalize="off"
+         spellcheck="false" placeholder="https://….workers.dev">
+  <button class="syncbtn" id="syncNow" hidden>Sync now</button>
+  <p class="syncstate" id="syncState"></p>
+</section>
+
 <div class="bar" id="bar" hidden>
   <div class="inner">
     <button class="save" id="save">Save session</button>
@@ -164,6 +183,9 @@
 
 <script>
 const KEY = 'training-log-v1';
+/* Kept out of the log blob, and deliberately out of the repo: the relay URL is
+   typed in on the device, so a public source tree never carries the endpoint. */
+const RELAY_KEY = 'training-log-relay';
 const PLAN = {
   A: {name:'Pull & hinge', flag:false, moves:[
     {n:'Weighted pull-up',       t:'4 × 5–8'},
@@ -198,6 +220,51 @@ function persist(){
   }catch(e){
     toast('Could not save to this device. Copy the session text before closing.');
   }
+}
+
+/* ---------- notion relay ---------- */
+function getRelay(){
+  try{ return (localStorage.getItem(RELAY_KEY) || '').trim(); }catch(e){ return ''; }
+}
+function setRelay(v){
+  try{ v ? localStorage.setItem(RELAY_KEY, v.trim()) : localStorage.removeItem(RELAY_KEY); }catch(e){}
+}
+const unsynced = () => state.sessions.filter(s => !s.synced);
+
+/* One session -> one Notion row. Resolves true only when the row actually landed. */
+async function pushOne(s){
+  const relay = getRelay();
+  if(!relay) return false;
+  const r = await fetch(relay, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({type:s.type, ts:s.ts, lifts:s.lifts, bw:s.bw, cardio:s.cardio, note:s.note})
+  });
+  const out = await r.json().catch(()=>({}));
+  if(!r.ok || !out.ok) throw new Error(out.error || ('relay returned ' + r.status));
+  s.synced = true;
+  if(out.url) s.notionUrl = out.url;
+  persist();
+  return true;
+}
+
+/* Never throws, never blocks a save. Reports what happened and repaints. */
+async function pushPending(loud){
+  const relay = getRelay();
+  const todo = unsynced();
+  if(!relay || !todo.length){ paintSync(); return; }
+  if(!navigator.onLine){
+    if(loud) toast('Offline — will sync when you have signal');
+    paintSync(); return;
+  }
+  let done = 0, failed = null;
+  for(const s of todo){
+    try{ await pushOne(s); done++; }
+    catch(e){ failed = e.message; break; }
+  }
+  paintLedger(); paintSync();
+  if(failed) toast('Sync failed: ' + failed);
+  else if(loud && done) toast(done + ' session' + (done>1?'s':'') + ' written to Notion');
 }
 
 /* ---------- helpers ---------- */
@@ -376,6 +443,17 @@ function saveSession(){
   paintHeader(); paintLedger();
   toast('Session ' + s.type + ' saved — ' + stamp(s.ts));
   window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
+  paintSync();
+  pushPending(false);   // fire and forget; the save above already succeeded
+}
+
+function paintSync(){
+  const relay = getRelay(), n = unsynced().length;
+  $('syncNow').hidden = !relay || !n;
+  if(!relay){ $('syncState').textContent = ''; return; }
+  $('syncState').textContent = n
+    ? n + ' session' + (n>1?'s':'') + ' not yet in Notion'
+    : (state.sessions.length ? 'All sessions written to Notion' : '');
 }
 
 function paintLedger(){
@@ -389,6 +467,7 @@ function paintLedger(){
       '<span class="tag ' + s.type.toLowerCase() + '">' + s.type + '</span>' +
       '<span class="stamp">' + stamp(s.ts) + '</span>' +
       '<span class="rest">' + ago(s.ts) + (s.bw ? ' · ' + s.bw + 'kg' : '') + '</span>' +
+      (getRelay() && !s.synced ? '<span class="pending">not synced</span>' : '') +
     '</div>' +
     (liftLines(s) ? '<p class="lifts">' + esc(liftLines(s)) + '</p>' : '') +
     (s.note ? '<p class="lifts">' + esc(s.note) + '</p>' : '') +
@@ -408,6 +487,21 @@ function paintLedger(){
 $('pickA').addEventListener('click', ()=>choose('A'));
 $('pickB').addEventListener('click', ()=>choose('B'));
 $('save').addEventListener('click', saveSession);
+$('relay').addEventListener('change', ()=>{
+  const v = $('relay').value.trim();
+  // https everywhere, with the same loopback exemption browsers make for
+  // secure contexts - otherwise the relay can't be tested locally.
+  if(v && !/^https:\/\/\S+$/.test(v) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(v)){
+    toast('That needs to be a full https:// URL'); return;
+  }
+  setRelay(v);
+  toast(v ? 'Relay saved on this device' : 'Relay cleared');
+  paintLedger(); paintSync();
+  if(v) pushPending(true);
+});
+$('syncNow').addEventListener('click', ()=>pushPending(true));
+window.addEventListener('online', ()=>pushPending(false));
+
 document.querySelectorAll('[data-fill]').forEach(b=>
   b.addEventListener('click', ()=>fillPrescribed(b.dataset.fill)));
 $('exportAll').addEventListener('click', ()=>{
@@ -424,7 +518,9 @@ $('cancel').addEventListener('click', ()=>{
 
 (function init(){
   load();
-  paintHeader(); paintLedger();
+  $('relay').value = getRelay();
+  paintHeader(); paintLedger(); paintSync();
+  pushPending(false);   // catch up anything logged offline last session
   if(state.draft && state.draft.type){
     choose(state.draft.type);
     toast('Picked up where you left off');

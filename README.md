@@ -41,6 +41,48 @@ caught before it lands in the ledger.
 Tapping a second one re-fills whatever the first put there, so Low → Top is fine. Anything you
 typed yourself, or pulled in with **Same again**, is left alone.
 
+## Notion sync (optional)
+
+The page cannot call Notion. `api.notion.com` returns no CORS headers at all, so the browser
+blocks the request before it is sent — verified, not assumed. And a Notion token in client-side
+JS on a public repo would hand write access to anyone who reads the source.
+
+So `worker.js` sits in between: the phone POSTs a session to the worker, the worker writes the
+row. The token lives in Cloudflare as an encrypted secret and never reaches the phone.
+
+    phone  ->  your Cloudflare Worker (holds the token)  ->  Notion API
+
+### Setting it up
+
+1. **Notion integration.** notion.so/my-integrations → New integration → internal, this
+   workspace. Copy the `ntn_...` token. Then open the Training Log database → ⋯ → Connections →
+   add the integration. Without that last step every write returns 404.
+2. **Cloudflare Worker.** dash.cloudflare.com → Workers & Pages → Create → Worker. Paste
+   `worker.js` over the default code and deploy.
+3. **Settings → Variables:**
+   - `NOTION_TOKEN` — *secret* (encrypt it), the `ntn_...` value
+   - `NOTION_DB` — plain var, `5ad1fd6d-1ec9-42ba-a15c-b120e429c5fc`
+   - `ALLOWED_ORIGIN` — plain var, `https://fongkaimun1987-creator.github.io`
+   - `NOTION_DS` — only if a write fails complaining about data sources; set it to
+     `6af8ccf0-3d3f-4765-a137-ea01ae28beb1` and the worker switches to the newer API automatically
+4. **In the app**, scroll to *Notion sync* and paste the worker URL.
+
+### Why the URL is typed in, not committed
+
+The relay URL is stored in `localStorage` on the device, never in this repo. A public source tree
+therefore does not carry the endpoint. Anyone who did learn the URL could only append rows to this
+one database — the worker validates shape, writes one row, and reads nothing back.
+
+### What it guarantees
+
+Local-first, always. Saving writes to `localStorage` and returns; the network call happens after
+and can fail freely. A session that has not reached Notion keeps a **not synced** badge in the
+ledger and a *Sync now* button appears. Retries happen on app open and when the device comes back
+online, and only unsynced sessions are sent, so a retry cannot duplicate a row.
+
+This is the answer to the original "no automatic write" rule. That rule existed because a *silent*
+failure mid-workout is worse than no write. This never fails silently and never blocks the save.
+
 ## Deploying an update
 
 The worker is deliberately cache-first, so a phone that has the app installed will keep serving
@@ -82,8 +124,10 @@ desktop browser, unregister the worker in DevTools → Application → Service W
 - **Reps as free text** (`8, 7, 6, 6`), not one input per set. Faster on a phone.
 - **Draft autosave**, 600ms after the last keystroke. A session gets logged in pieces across
   45 minutes; closing the app mid-session loses nothing.
-- **No Notion API write.** A silent write failure mid-workout is worse than no write.
-  Copy-paste out is the choice. Do not add an integration.
+- **No *blocking* Notion write.** The original rule was "no API integration at all", because a
+  silent failure mid-workout is worse than no write. Sync now exists, but it keeps the spirit of
+  that rule: the save completes locally first, the write happens after, and a failure is visible
+  in the ledger rather than swallowed. Never make saving wait on the network.
 - **No Google Fonts.** The original loaded Archivo over the network, which would have failed
   on exactly the cold offline launch this app exists for. System grotesque stack instead.
 
