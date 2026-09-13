@@ -54,6 +54,15 @@ const CACHE = 'training-log-v1';   // -> v2, v3, ...
 
 On the next launch with signal, the new worker installs, drops the old cache, and takes over.
 
+The precache deliberately uses `new Request(u, {cache: 'reload'})`. Without it `addAll()` reads
+through the browser's own HTTP cache, so a new worker precaches the stale copy it already had
+and the update silently never lands — bumping `CACHE` wouldn't save you. This was caught in
+testing, not in theory.
+
+Note that `caches.match` runs with `ignoreSearch: true`, so a `?cachebust=` query string will
+*not* get you a fresh copy while a worker is installed. To see a deploy immediately on a
+desktop browser, unregister the worker in DevTools → Application → Service Workers.
+
 ## Files
 
 | File | Why |
