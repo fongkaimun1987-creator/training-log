@@ -1,5 +1,5 @@
 /* Cache-first shell. Bump CACHE on every deploy or phones keep the old copy. */
-const CACHE = 'training-log-v1';
+const CACHE = 'training-log-v2';
 const ASSETS = [
   './',
   './index.html',
@@ -28,11 +28,14 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
+  // Never touch cross-origin traffic. Intercepting it turned a real network
+  // error into a fake 504 and hid what actually went wrong.
+  if (new URL(req.url).origin !== location.origin) return;
   e.respondWith(
     caches.match(req, { ignoreSearch: true }).then(hit => {
       if (hit) return hit;
       return fetch(req).then(res => {
-        if (res && res.ok && new URL(req.url).origin === location.origin) {
+        if (res && res.ok) {
           const copy = res.clone();
           caches.open(CACHE).then(c => c.put(req, copy));
         }
