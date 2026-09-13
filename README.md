@@ -83,6 +83,24 @@ online, and only unsynced sessions are sent, so a retry cannot duplicate a row.
 This is the answer to the original "no automatic write" rule. That rule existed because a *silent*
 failure mid-workout is worse than no write. This never fails silently and never blocks the save.
 
+## Deliberately not built: reading back from Notion
+
+Sync is one way. The app writes to Notion and never reads, so the ledger, the **Last:** recall and
+the load progression all read this device's `localStorage` only.
+
+That is fine while one phone does the logging. It stops being fine the moment a second device
+logs a session: both would write to Notion correctly, but each device's recall would see only its
+own history and quietly give you the wrong "last time" numbers. Silently wrong, not visibly broken.
+
+Considered and deferred on 2026-09-13. If it is wanted later, the shape is:
+
+- a read endpoint on the worker that queries the Training Log
+- the app merges recent sessions on open, local copy still the thing you log into, so offline holds
+- a hidden `Key` property on the database carrying the local session id, because Notion rows have
+  no stable link back to one and a retry would otherwise duplicate rows
+- a random token in the pasted relay URL, checked by the worker. The URL is write-only today, so
+  leaking it means someone can add junk. Add reads and it hands over bodyweight and notes too.
+
 ## Deploying an update
 
 The worker is deliberately cache-first, so a phone that has the app installed will keep serving
