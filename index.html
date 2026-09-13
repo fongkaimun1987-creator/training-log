@@ -84,6 +84,9 @@
   .mv{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px 13px 12px;margin-bottom:9px}
   .mv h3{margin:0;font-size:15.5px;font-weight:600;display:flex;justify-content:space-between;gap:10px;align-items:baseline}
   .mv h3 span{font-size:12.5px;font-weight:400;color:var(--muted);white-space:nowrap}
+  .cue{margin:5px 0 0;font-size:12.5px;color:var(--muted);line-height:1.4}
+  .prog{margin:7px 0 0;font-size:12.5px;color:var(--muted);line-height:1.4}
+  .prog.earned{color:var(--ok);font-weight:600}
   .fields{display:grid;grid-template-columns:112px 1fr;gap:8px;margin-top:10px}
   .last{margin:9px 0 0;font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .repeat{border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;font-weight:500;background:#fff}
@@ -223,40 +226,56 @@ const RELAY_KEY = 'training-log-relay';
 /* Shown at the foot of the page. The phone is the only place this runs and I
    can't inspect it, so the app has to be able to state its own version and
    whether a relay is stored. */
-const BUILD = 'v11';
+const BUILD = 'v12';
 /* Declared here, not beside the registration code at the foot of the script:
    paintBuild() reads it during init() and a `let` further down puts it in the
    temporal dead zone, which threw and took the whole sync panel with it. */
 let swOk = null;
+/* sets/lo/hi drive both the display and the Low/Mid/Top fill.
+   kind picks the double-progression step from the routine page: 2.5kg upper,
+   5kg lower. cue is the one-line coaching note from that same page. */
 const PLAN = {
   A: {name:'Pull & hinge', flag:false, moves:[
-    {n:'Weighted pull-up',       t:'4 × 5–8'},
-    {n:'Barbell bent-over row',  t:'3 × 6–10'},
-    {n:'Romanian deadlift',      t:'3 × 8–10'},
-    {n:'Lateral raise',          t:'3 × 12–15'},
-    {n:'Weighted hanging leg raise', t:'3 × 8–12'}
+    {n:'Weighted pull-up', sets:4, lo:5,  hi:8,  kind:'upper',
+     cue:'Your strongest lift. Belt or dumbbell between the feet.'},
+    {n:'Barbell bent-over row', sets:3, lo:6, hi:10, kind:'upper',
+     cue:'Torso about 45°. Don\u2019t let it drift upright.'},
+    {n:'Romanian deadlift', sets:3, lo:8, hi:10, kind:'lower', standing:true,
+     cue:'Soft knees, hips back, stop at mid-shin.'},
+    {n:'Lateral raise', sets:3, lo:12, hi:15, kind:'upper',
+     cue:'The one isolation worth keeping — it builds the width.'},
+    {n:'Weighted hanging leg raise', sets:3, lo:8, hi:12, kind:'upper',
+     cue:'Add weight, don\u2019t add reps forever.'}
   ]},
   B: {name:'Push & squat', flag:true, moves:[
-    {n:'Weighted dip',           t:'4 × 5–8'},
-    {n:'Standing overhead press',t:'3 × 5–8'},
-    {n:'Bulgarian split squat',  t:'3 × 8–10 / leg'},
-    {n:'Lateral raise',          t:'3 × 12–15'},
-    {n:'Weighted hanging leg raise', t:'3 × 8–12'}
+    {n:'Weighted dip', sets:4, lo:5, hi:8, kind:'upper',
+     cue:'Slight forward lean for chest bias.'},
+    {n:'Standing overhead press', sets:3, lo:5, hi:8, kind:'upper', standing:true,
+     cue:'Standing and braced. Set up near a rack.'},
+    {n:'Bulgarian split squat', sets:3, lo:8, hi:10, kind:'lower', perLeg:true,
+     cue:'Dumbbells in hands. Lower spinal load than a back squat.'},
+    {n:'Lateral raise', sets:3, lo:12, hi:15, kind:'upper', cue:''},
+    {n:'Weighted hanging leg raise', sets:3, lo:8, hi:12, kind:'upper', cue:''}
   ]},
-  /* C stands in for an A or B day. Horizontal push, bilateral squat, vertical
-     pull - the two patterns A/B never cover, plus the strongest lift. */
+  /* C stands in for an A or B day: the horizontal push and bilateral squat
+     that A and B never cover, plus the strongest lift. */
   C: {name:'Full body', flag:true, moves:[
-    {n:'Push-up',                t:'3 × 12–20'},
-    {n:'Barbell back squat',     t:'3 × 6–10'},
-    {n:'Weighted pull-up',       t:'3 × 5–8'}
+    {n:'Push-up', sets:3, lo:12, hi:20, kind:'upper',
+     cue:'Elevate the feet or add load once 20 is easy.'},
+    {n:'Barbell back squat', sets:3, lo:6, hi:10, kind:'lower', standing:true,
+     cue:'Rack with safeties. Don\u2019t train this one to failure.'},
+    {n:'Weighted pull-up', sets:3, lo:5, hi:8, kind:'upper', cue:''}
   ]},
   /* D is the short one: the two highest-value pulls and the hinge. */
   D: {name:'Quick & dirty', flag:true, moves:[
-    {n:'Weighted pull-up',       t:'3 × 5–8'},
-    {n:'Barbell bent-over row',  t:'3 × 8–12'},
-    {n:'Romanian deadlift',      t:'2 × 8–10'}
+    {n:'Weighted pull-up', sets:3, lo:5, hi:8, kind:'upper', cue:''},
+    {n:'Barbell bent-over row', sets:3, lo:8, hi:12, kind:'upper',
+     cue:'Torso about 45°.'},
+    {n:'Romanian deadlift', sets:2, lo:8, hi:10, kind:'lower', standing:true,
+     cue:'Soft knees, hips back.'}
   ]}
 };
+const STEP = {upper:2.5, lower:5};
 const TYPES = ['A','B','C','D'];
 
 let state = {sessions:[], draft:null};
@@ -416,12 +435,17 @@ function buildForm(type, draft){
     const hint = p && (p.weight || p.reps)
       ? '<p class="last">Last: ' + [p.weight, p.reps].filter(Boolean).join(' — ') +
         '<button class="repeat" data-rep="' + i + '">Same again</button></p>' : '';
+    const prog = progressLine(m, p);
+    const earned = prog.indexOf('earned') > -1;
     return '<div class="mv">' +
-      '<h3>' + m.n + '<span>' + m.t + '</span></h3>' +
+      '<h3>' + m.n + '<span>' + targetText(m) + '</span></h3>' +
+      (m.cue ? '<p class="cue">' + esc(m.cue) + '</p>' : '') +
       '<div class="fields">' +
         '<input type="text" id="w' + i + '" value="' + esc(w) + '" placeholder="Load" aria-label="Load for ' + esc(m.n) + '">' +
         '<input type="text" id="r' + i + '" value="' + esc(r) + '" inputmode="numeric" placeholder="Reps e.g. 8, 7, 6" aria-label="Reps for ' + esc(m.n) + '">' +
-      '</div>' + hint + '</div>';
+      '</div>' + hint +
+      (prog ? '<p class="prog' + (earned ? ' earned' : '') + '">' + esc(prog) + '</p>' : '') +
+      '</div>';
   }).join('');
   $('bw').value    = draft ? (draft.bw || '')     : '';
   $('cardio').value= draft ? (draft.cardio || '') : '';
@@ -442,19 +466,32 @@ function buildForm(type, draft){
 }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-/* '4 × 5–8' -> {sets:4, low:5, high:8}. A single number reads as low = high. */
-function scheme(t){
-  const m = t.match(/(\d+)\s*[×x]\s*(\d+)(?:\s*[–—-]\s*(\d+))?/);
-  return m ? {sets:+m[1], low:+m[2], high: m[3] ? +m[3] : +m[2]} : null;
+function targetText(m){
+  return m.sets + ' set' + (m.sets>1?'s':'') + ' · ' + m.lo + '–' + m.hi + ' reps'
+       + (m.perLeg ? ' / leg' : '');
 }
-function prescribed(t, end){
-  const s = scheme(t);
-  if(!s) return '';
-  const r = end === 'top' ? s.high
-          : end === 'mid' ? Math.floor((s.low + s.high) / 2)
-          : s.low;
-  return Array(s.sets).fill(r).join(', ');
+function prescribed(m, end){
+  const r = end === 'top' ? m.hi
+          : end === 'mid' ? Math.floor((m.lo + m.hi) / 2)
+          : m.lo;
+  return Array(m.sets).fill(r).join(', ');
 }
+/* Double progression, straight off the routine page: top of the range on every
+   set earns the next load. During a cut holding is the win, so this only ever
+   says "earned" - it never nags. */
+function progressLine(m, prev){
+  if(!prev || !prev.weight) return '';
+  const reps = String(prev.reps || '').split(',').map(x=>parseInt(x,10)).filter(n=>!isNaN(n));
+  const step = STEP[m.kind];
+  if(reps.length >= m.sets && reps.every(r => r >= m.hi)){
+    const num = parseFloat(String(prev.weight).replace(/[^0-9.]/g,''));
+    const next = isNaN(num) ? null : (num + step);
+    return 'Top of range on every set — earned +' + step + 'kg'
+         + (next !== null ? ' (try ' + next + 'kg)' : '');
+  }
+  return 'Hold ' + prev.weight + '. ' + m.sets + ' × ' + m.hi + ' earns +' + step + 'kg.';
+}
+
 const END_NAME = {low:'the low end', mid:'mid range', top:'the top end'};
 /* Fills blanks, and overwrites anything a previous Low/Mid/Top tap put there —
    but never touches a number that was typed or pulled in by "Same again". */
@@ -467,7 +504,7 @@ function fillPrescribed(end){
     const p = prev ? prev.lifts.find(l=>l.n === m.n) : null;
     if(!w.value && p && p.weight) w.value = p.weight;
     if(!r.value || r.dataset.auto === '1'){
-      const v = prescribed(m.t, end);
+      const v = prescribed(m, end);
       if(v){ r.value = v; r.dataset.auto = '1'; n++; }
     }
   });
