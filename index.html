@@ -248,8 +248,13 @@ async function pushOne(s){
   return true;
 }
 
+/* Only ever one run at a time. A session is marked synced after its POST
+   resolves, so two overlapping runs would both see it as pending and write it
+   twice - a duplicate row in Notion, which is the one thing this must not do. */
+let pushing = false;
 /* Never throws, never blocks a save. Reports what happened and repaints. */
 async function pushPending(loud){
+  if(pushing){ if(loud) toast('Already syncing'); return; }
   const relay = getRelay();
   const todo = unsynced();
   if(!relay || !todo.length){ paintSync(); return; }
@@ -257,11 +262,15 @@ async function pushPending(loud){
     if(loud) toast('Offline — will sync when you have signal');
     paintSync(); return;
   }
+  pushing = true;
   let done = 0, failed = null;
-  for(const s of todo){
-    try{ await pushOne(s); done++; }
-    catch(e){ failed = e.message; break; }
-  }
+  try{
+    for(const s of todo){
+      if(s.synced) continue;        // a concurrent run may have got there first
+      try{ await pushOne(s); done++; }
+      catch(e){ failed = e.message; break; }
+    }
+  } finally { pushing = false; }
   paintLedger(); paintSync();
   if(failed) toast('Sync failed: ' + failed);
   else if(loud && done) toast(done + ' session' + (done>1?'s':'') + ' written to Notion');
@@ -449,7 +458,8 @@ function saveSession(){
 
 function paintSync(){
   const relay = getRelay(), n = unsynced().length;
-  $('syncNow').hidden = !relay || !n;
+  const typed = $('relay').value.trim();
+  $('syncNow').hidden = !n || !(relay || relayOk(typed));
   if(!relay){ $('syncState').textContent = ''; return; }
   $('syncState').textContent = n
     ? n + ' session' + (n>1?'s':'') + ' not yet in Notion'
@@ -487,19 +497,38 @@ function paintLedger(){
 $('pickA').addEventListener('click', ()=>choose('A'));
 $('pickB').addEventListener('click', ()=>choose('B'));
 $('save').addEventListener('click', saveSession);
-$('relay').addEventListener('change', ()=>{
-  const v = $('relay').value.trim();
+function relayOk(v){
   // https everywhere, with the same loopback exemption browsers make for
   // secure contexts - otherwise the relay can't be tested locally.
-  if(v && !/^https:\/\/\S+$/.test(v) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(v)){
-    toast('That needs to be a full https:// URL'); return;
-  }
+  return /^https:\/\/\S+$/.test(v) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(v);
+}
+/* Committed on input, not just change. iOS often doesn't blur the field when
+   you paste and hit Done, and a relay that never got stored leaves Sync now
+   hidden - which looks exactly like the sync being broken. */
+let rt;
+$('relay').addEventListener('input', ()=>{
+  clearTimeout(rt);
+  rt = setTimeout(()=>{
+    const v = $('relay').value.trim();
+    if(v && !relayOk(v)){ paintSync(); return; }   // quiet: they may still be typing
+    setRelay(v);
+    paintLedger(); paintSync();
+  }, 700);
+});
+$('relay').addEventListener('change', ()=>{
+  const v = $('relay').value.trim();
+  if(v && !relayOk(v)){ toast('That needs to be a full https:// URL'); return; }
   setRelay(v);
   toast(v ? 'Relay saved on this device' : 'Relay cleared');
   paintLedger(); paintSync();
   if(v) pushPending(true);
 });
-$('syncNow').addEventListener('click', ()=>pushPending(true));
+$('syncNow').addEventListener('click', ()=>{
+  const v = $('relay').value.trim();
+  if(v && relayOk(v) && v !== getRelay()) setRelay(v);   // never stall on an uncommitted field
+  if(!getRelay()){ toast('Paste your relay URL first'); return; }
+  pushPending(true);
+});
 window.addEventListener('online', ()=>pushPending(false));
 
 document.querySelectorAll('[data-fill]').forEach(b=>
