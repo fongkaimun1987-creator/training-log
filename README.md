@@ -25,6 +25,22 @@ pasted into the Notion database *Training Log*, which is the system of record �
 **Copy all sessions** at the bottom of the ledger is for. It emits every session in the same
 plain-text block the per-session Copy uses, newest first, blank line between.
 
+## Filling it in when you can't be bothered
+
+Above the movements are three buttons — **Low**, **Mid**, **Top**. Each fills every blank rep
+field from that movement's prescription, and every blank load from last time:
+
+| Target | Low | Mid | Top |
+|---|---|---|---|
+| `4 × 5–8` | `5, 5, 5, 5` | `6, 6, 6, 6` | `8, 8, 8, 8` |
+| `3 × 12–15` | `12, 12, 12` | `13, 13, 13` | `15, 15, 15` |
+
+They fill the form — they do not save. You still tap **Save session**, so a wrong number gets
+caught before it lands in the ledger.
+
+Tapping a second one re-fills whatever the first put there, so Low → Top is fine. Anything you
+typed yourself, or pulled in with **Same again**, is left alone.
+
 ## Deploying an update
 
 The worker is deliberately cache-first, so a phone that has the app installed will keep serving

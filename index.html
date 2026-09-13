@@ -64,6 +64,11 @@
 
   /* movements */
   .work{margin-top:22px}
+  .prefill{background:var(--card);border:1px dashed var(--line);border-radius:var(--r);padding:11px 12px 12px;margin-bottom:10px}
+  .prefill>span{display:block;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+  .pf-row{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+  .pf{border:1px solid var(--line);border-radius:10px;padding:9px 6px;font-size:14px;font-weight:500;background:#fff;transition:transform .12s ease}
+  .pf:active{transform:scale(.98)}
   .mv{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px 13px 12px;margin-bottom:9px}
   .mv h3{margin:0;font-size:15.5px;font-weight:600;display:flex;justify-content:space-between;gap:10px;align-items:baseline}
   .mv h3 span{font-size:12.5px;font-weight:400;color:var(--muted);white-space:nowrap}
@@ -123,6 +128,14 @@
 </div>
 
 <div class="work" id="work" hidden>
+  <div class="prefill">
+    <span>Fill as prescribed, then check it</span>
+    <div class="pf-row">
+      <button class="pf" data-fill="low" type="button">Low</button>
+      <button class="pf" data-fill="mid" type="button">Mid</button>
+      <button class="pf" data-fill="top" type="button">Top</button>
+    </div>
+  </div>
   <div id="moves"></div>
   <div class="meta">
     <input id="bw" type="text" inputmode="decimal" placeholder="Bodyweight kg">
@@ -282,13 +295,51 @@ function buildForm(type, draft){
   $('moves').querySelectorAll('[data-rep]').forEach(b=>{
     b.addEventListener('click', ()=>{
       const i = +b.dataset.rep, p = last(type).lifts.find(l=>l.n === PLAN[type].moves[i].n);
-      $('w'+i).value = p.weight || ''; $('r'+i).value = p.reps || ''; saveDraft();
+      $('w'+i).value = p.weight || ''; $('r'+i).value = p.reps || '';
+      delete $('r'+i).dataset.auto; saveDraft();
     });
   });
-  document.querySelectorAll('#work input').forEach(el=>el.addEventListener('input', saveDraft));
+  document.querySelectorAll('#work input').forEach(el=>el.addEventListener('input', ()=>{
+    delete el.dataset.auto;   // typed over: prefill leaves it alone from here
+    saveDraft();
+  }));
   $('save').disabled = !dirty();
 }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* '4 × 5–8' -> {sets:4, low:5, high:8}. A single number reads as low = high. */
+function scheme(t){
+  const m = t.match(/(\d+)\s*[×x]\s*(\d+)(?:\s*[–—-]\s*(\d+))?/);
+  return m ? {sets:+m[1], low:+m[2], high: m[3] ? +m[3] : +m[2]} : null;
+}
+function prescribed(t, end){
+  const s = scheme(t);
+  if(!s) return '';
+  const r = end === 'top' ? s.high
+          : end === 'mid' ? Math.floor((s.low + s.high) / 2)
+          : s.low;
+  return Array(s.sets).fill(r).join(', ');
+}
+const END_NAME = {low:'the low end', mid:'mid range', top:'the top end'};
+/* Fills blanks, and overwrites anything a previous Low/Mid/Top tap put there —
+   but never touches a number that was typed or pulled in by "Same again". */
+function fillPrescribed(end){
+  if(!active) return;
+  const prev = last(active);
+  let n = 0;
+  PLAN[active].moves.forEach((m,i)=>{
+    const w = $('w'+i), r = $('r'+i);
+    const p = prev ? prev.lifts.find(l=>l.n === m.n) : null;
+    if(!w.value && p && p.weight) w.value = p.weight;
+    if(!r.value || r.dataset.auto === '1'){
+      const v = prescribed(m.t, end);
+      if(v){ r.value = v; r.dataset.auto = '1'; n++; }
+    }
+  });
+  saveDraft();
+  toast(n ? 'Filled at ' + END_NAME[end] + ' — check it before saving'
+          : 'Nothing left to fill');
+}
 
 function collect(){
   return {
@@ -356,6 +407,8 @@ function paintLedger(){
 $('pickA').addEventListener('click', ()=>choose('A'));
 $('pickB').addEventListener('click', ()=>choose('B'));
 $('save').addEventListener('click', saveSession);
+document.querySelectorAll('[data-fill]').forEach(b=>
+  b.addEventListener('click', ()=>fillPrescribed(b.dataset.fill)));
 $('exportAll').addEventListener('click', ()=>{
   if(!state.sessions.length) return;
   copy(allText());
