@@ -1,5 +1,5 @@
 /* Cache-first shell. Bump CACHE on every deploy or phones keep the old copy. */
-const CACHE = 'training-log-v13';
+const CACHE = 'training-log-v14';
 const ASSETS = [
   './',
   './index.html',

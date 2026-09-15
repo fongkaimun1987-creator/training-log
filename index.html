@@ -88,6 +88,10 @@
   .prog{margin:7px 0 0;font-size:12.5px;color:var(--muted);line-height:1.4}
   .prog.earned{color:var(--ok);font-weight:600}
   .fields{display:grid;grid-template-columns:112px 1fr;gap:8px;margin-top:10px}
+  /* One box per set: the numeric keypad has no comma or space key, so a single
+     "8, 7, 6" field could never actually be typed on a phone. */
+  .sets{display:flex;gap:6px}
+  .sets input{text-align:center;padding-left:4px;padding-right:4px;min-width:0}
   .last{margin:9px 0 0;font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .repeat{border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;font-weight:500;background:#fff}
   .meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
@@ -462,7 +466,7 @@ function buildForm(type, draft){
       (m.cue ? '<p class="cue">' + esc(m.cue) + '</p>' : '') +
       '<div class="fields">' +
         '<input type="text" id="w' + i + '" value="' + esc(w) + '" placeholder="Load" aria-label="Load for ' + esc(m.n) + '">' +
-        '<input type="text" id="r' + i + '" value="' + esc(r) + '" inputmode="numeric" placeholder="Reps e.g. 8, 7, 6" aria-label="Reps for ' + esc(m.n) + '">' +
+        '<div class="sets" id="r' + i + '">' + repsBoxes(i, m, r) + '</div>' +
       '</div>' + hint +
       (prog ? '<p class="prog' + (earned ? ' earned' : '') + '">' + esc(prog) + '</p>' : '') +
       '</div>';
@@ -474,8 +478,8 @@ function buildForm(type, draft){
   $('moves').querySelectorAll('[data-rep]').forEach(b=>{
     b.addEventListener('click', ()=>{
       const i = +b.dataset.rep, p = last(type).lifts.find(l=>l.n === PLAN[type].moves[i].n);
-      $('w'+i).value = p.weight || ''; $('r'+i).value = p.reps || '';
-      delete $('r'+i).dataset.auto; saveDraft();
+      $('w'+i).value = p.weight || ''; repsSet(i, p.reps || '');
+      repBoxes(i).forEach(el=>{ delete el.dataset.auto; }); saveDraft();
     });
   });
   document.querySelectorAll('#work input').forEach(el=>el.addEventListener('input', ()=>{
@@ -485,6 +489,26 @@ function buildForm(type, draft){
   $('save').disabled = !dirty();
 }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* Reps are one box per set. Stored and exported as "8, 7, 6" exactly as before —
+   the comma only ever has to be typed by the code, never by a thumb. */
+function repsBoxes(i, m, val){
+  const v = splitReps(val);
+  let h = '';
+  for(let j = 0; j < m.sets; j++){
+    h += '<input type="text" id="r' + i + 's' + j + '" value="' + esc(v[j] || '') + '"' +
+         ' inputmode="numeric" maxlength="3" placeholder="\u2013"' +
+         ' aria-label="Set ' + (j+1) + ' reps for ' + esc(m.n) + '">';
+  }
+  return h;
+}
+function splitReps(s){ return String(s == null ? '' : s).split(',').map(x=>x.trim()).filter(Boolean); }
+function repBoxes(i){ return Array.from($('r'+i).querySelectorAll('input')); }
+function repsOf(i){ return repBoxes(i).map(el=>el.value.trim()).filter(Boolean).join(', '); }
+function repsSet(i, val){
+  const v = splitReps(val);
+  repBoxes(i).forEach((el,j)=>{ el.value = v[j] || ''; });
+}
 
 function targetText(m){
   return m.sets + ' set' + (m.sets>1?'s':'') + ' · ' + m.lo + '–' + m.hi + ' reps'
@@ -520,12 +544,12 @@ function fillPrescribed(end){
   const prev = last(active);
   let n = 0;
   PLAN[active].moves.forEach((m,i)=>{
-    const w = $('w'+i), r = $('r'+i);
+    const w = $('w'+i), boxes = repBoxes(i);
     const p = prev ? prev.lifts.find(l=>l.n === m.n) : null;
     if(!w.value && p && p.weight) w.value = p.weight;
-    if(!r.value || r.dataset.auto === '1'){
+    if(boxes.every(el => !el.value || el.dataset.auto === '1')){
       const v = prescribed(m, end);
-      if(v){ r.value = v; r.dataset.auto = '1'; n++; }
+      if(v){ repsSet(i, v); boxes.forEach(el=>{ el.dataset.auto = '1'; }); n++; }
     }
   });
   saveDraft();
@@ -536,7 +560,7 @@ function fillPrescribed(end){
 function collect(){
   return {
     type: active,
-    lifts: PLAN[active].moves.map((m,i)=>({n:m.n, weight:$('w'+i).value.trim(), reps:$('r'+i).value.trim()})),
+    lifts: PLAN[active].moves.map((m,i)=>({n:m.n, weight:$('w'+i).value.trim(), reps: repsOf(i)})),
     bw: $('bw').value.trim(), cardio: $('cardio').value.trim(), note: $('note').value.trim()
   };
 }
