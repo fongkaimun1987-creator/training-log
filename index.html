@@ -90,8 +90,8 @@
   .fields{display:grid;grid-template-columns:112px 1fr;gap:8px;margin-top:10px}
   /* One box per set: the numeric keypad has no comma or space key, so a single
      "8, 7, 6" field could never actually be typed on a phone. */
-  .sets{display:flex;gap:6px}
-  .sets input{text-align:center;padding-left:4px;padding-right:4px;min-width:0}
+  .sets{display:flex;flex-wrap:wrap;gap:6px}
+  .sets input{text-align:center;padding-left:4px;padding-right:4px;flex:1 1 44px;min-width:44px}
   .last{margin:9px 0 0;font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .repeat{border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;font-weight:500;background:#fff}
   .meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
@@ -284,6 +284,7 @@ const PLAN = {
   ]}
 };
 const STEP = {upper:2.5, lower:5};
+const MAX_SETS = 8;   // a stuck thumb shouldn't be able to grow a row forever
 const TYPES = ['A','B','C','D'];
 
 let state = {sessions:[], draft:null};
@@ -466,7 +467,7 @@ function buildForm(type, draft){
       (m.cue ? '<p class="cue">' + esc(m.cue) + '</p>' : '') +
       '<div class="fields">' +
         '<input type="text" id="w' + i + '" value="' + esc(w) + '" placeholder="Load" aria-label="Load for ' + esc(m.n) + '">' +
-        '<div class="sets" id="r' + i + '">' + repsBoxes(i, m, r) + '</div>' +
+        '<div class="sets" id="r' + i + '" data-mv="' + esc(m.n) + '">' + repsBoxes(i, m, r) + '</div>' +
       '</div>' + hint +
       (prog ? '<p class="prog' + (earned ? ' earned' : '') + '">' + esc(prog) + '</p>' : '') +
       '</div>';
@@ -495,7 +496,8 @@ function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&'
 function repsBoxes(i, m, val){
   const v = splitReps(val);
   let h = '';
-  for(let j = 0; j < m.sets; j++){
+  const n = Math.min(Math.max(m.sets, v.length), MAX_SETS);
+  for(let j = 0; j < n; j++){
     h += '<input type="text" id="r' + i + 's' + j + '" value="' + esc(v[j] || '') + '"' +
          ' inputmode="numeric" maxlength="3" placeholder="\u2013"' +
          ' aria-label="Set ' + (j+1) + ' reps for ' + esc(m.n) + '">';
@@ -507,7 +509,25 @@ function repBoxes(i){ return Array.from($('r'+i).querySelectorAll('input')); }
 function repsOf(i){ return repBoxes(i).map(el=>el.value.trim()).filter(Boolean).join(', '); }
 function repsSet(i, val){
   const v = splitReps(val);
-  repBoxes(i).forEach((el,j)=>{ el.value = v[j] || ''; });
+  ensureBoxes(i, v.length).forEach((el,j)=>{ el.value = v[j] || ''; });
+}
+/* An extra set past the plan has to land somewhere - the old free-text field
+   took "8, 7, 6, 5" and a fixed row of boxes would have quietly lost the 5. */
+function newBox(row, j){
+  const el = document.createElement('input');
+  el.type = 'text'; el.id = row.id + 's' + j; el.inputMode = 'numeric';
+  el.maxLength = 3; el.placeholder = '\u2013';
+  el.setAttribute('aria-label', 'Set ' + (j+1) + ' reps for ' + (row.dataset.mv || ''));
+  el.addEventListener('input', ()=>{ delete el.dataset.auto; saveDraft(); });
+  row.appendChild(el);
+  return el;
+}
+function ensureBoxes(i, n){
+  const row = $('r'+i);
+  const want = Math.min(n, MAX_SETS);
+  let boxes = repBoxes(i);
+  while(boxes.length < want){ newBox(row, boxes.length); boxes = repBoxes(i); }
+  return boxes;
 }
 
 function targetText(m){
@@ -687,6 +707,14 @@ window.addEventListener('online', ()=>pushPending(false));
 
 document.querySelectorAll('[data-fill]').forEach(b=>
   b.addEventListener('click', ()=>fillPrescribed(b.dataset.fill)));
+/* Use the last box and a fresh one appears, so an unplanned set is always one
+   tap away and the row is never wider than the work actually done. */
+$('moves').addEventListener('input', e=>{
+  const el = e.target;
+  if(!el.matches('.sets input') || !el.value.trim()) return;
+  const row = el.closest('.sets'), boxes = Array.from(row.querySelectorAll('input'));
+  if(el === boxes[boxes.length-1]) ensureBoxes(row.id.slice(1), boxes.length + 1);
+});
 $('exportAll').addEventListener('click', ()=>{
   if(!state.sessions.length) return;
   copy(allText());
