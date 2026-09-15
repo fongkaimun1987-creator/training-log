@@ -283,7 +283,9 @@ const PLAN = {
      cue:'Soft knees, hips back.'}
   ]}
 };
-const STEP = {upper:2.5, lower:5};
+/* 2.5kg is 1.25kg a side - the smallest jump that needs no special plates.
+   Lower body came down from 5kg: on a cut that jump is rarely makeable. */
+const STEP = {upper:2.5, lower:2.5};
 const MAX_SETS = 8;   // a stuck thumb shouldn't be able to grow a row forever
 const TYPES = ['A','B','C','D'];
 
@@ -547,10 +549,14 @@ function progressLine(m, prev){
   if(!prev || !prev.weight) return '';
   const reps = String(prev.reps || '').split(',').map(x=>parseInt(x,10)).filter(n=>!isNaN(n));
   const step = STEP[m.kind];
-  if(reps.length >= m.sets && reps.every(r => r >= m.hi)){
+  /* Only the prescribed sets decide it. Extra boxes only ever appear after
+     those, so anything past them is extra volume - a light back-off set must
+     not cancel an increase the working sets already earned. */
+  const counted = reps.slice(0, m.sets);
+  if(counted.length === m.sets && counted.every(r => r >= m.hi)){
     const num = parseFloat(String(prev.weight).replace(/[^0-9.]/g,''));
     const next = isNaN(num) ? null : (num + step);
-    return 'Top of range on every set — earned +' + step + 'kg'
+    return 'Top of range on all ' + m.sets + ' sets — earned +' + step + 'kg'
          + (next !== null ? ' (try ' + next + 'kg)' : '');
   }
   return 'Hold ' + prev.weight + '. ' + m.sets + ' × ' + m.hi + ' earns +' + step + 'kg.';
