@@ -92,6 +92,16 @@
      "8, 7, 6" field could never actually be typed on a phone. */
   .sets{display:flex;flex-wrap:wrap;gap:6px}
   .sets input{text-align:center;padding-left:4px;padding-right:4px;flex:1 1 44px;min-width:44px}
+  .wild{margin-bottom:9px}
+  .deal{width:100%;background:transparent;border:1px dashed var(--line);border-radius:var(--r);
+    padding:15px;font-size:14.5px;font-weight:500;color:var(--muted)}
+  .deal[hidden]{display:none}
+  .wild .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:13px}
+  .wild .card[hidden]{display:none}
+  .kicker{margin:0 0 5px;font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+  .dare{margin:0;font-size:15px;line-height:1.45}
+  .redeal{margin-top:10px;border:1px solid var(--line);border-radius:20px;padding:3px 10px;
+    font-size:12px;font-weight:500;background:#fff;color:var(--muted)}
   .last{margin:9px 0 0;font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .repeat{border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;font-weight:500;background:#fff}
   .meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
@@ -185,6 +195,14 @@
     </div>
   </div>
   <div id="moves"></div>
+  <div class="wild" id="wild">
+    <button class="deal" id="deal" type="button">Deal a wild card</button>
+    <div class="card" id="wildCard" hidden>
+      <p class="kicker">Wild card</p>
+      <p class="dare" id="wildText"></p>
+      <button class="redeal" id="redeal" type="button">Deal another</button>
+    </div>
+  </div>
   <div class="meta">
     <input id="bw" type="text" inputmode="decimal" placeholder="Bodyweight kg">
     <input id="cardio" type="text" inputmode="numeric" placeholder="Incline mins">
@@ -447,6 +465,7 @@ function choose(type){
   });
   const useDraft = state.draft && state.draft.type === type ? state.draft : null;
   buildForm(type, useDraft);
+  paintWild();
   $('work').hidden = false; $('bar').hidden = false;
   $('flag').hidden = !PLAN[type].flag;
   $('work').scrollIntoView({behavior:'smooth', block:'start'});
@@ -562,6 +581,63 @@ function progressLine(m, prev){
   return 'Hold ' + prev.weight + '. ' + m.sets + ' × ' + m.hi + ' earns +' + step + 'kg.';
 }
 
+/* A wild card is a dare for today, not a lift. It is deliberately kept out of
+   collect(), so it cannot make the form dirty, cannot enable Save on its own,
+   and never reaches the ledger or Notion. Deal it, do it, forget it. */
+const WILD = [
+  '100 jumping jacks. Break them up however you like.',
+  '50 press-ups before you leave. Any number of sets.',
+  'One max-effort plank, straight after your last set.',
+  '3 × 20 air squats, slotted into your rest periods.',
+  '60 seconds of dead hang from the bar, total.',
+  '30 burpees. No rounds, no clock — just get to 30.',
+  '5 minutes of skipping, any tempo.',
+  'Bear crawl the length of the floor and back, twice.',
+  '25 jump squats, split however you like.',
+  '90 seconds of wall sit, total.',
+  '20 walking lunges per leg, unweighted, to finish.',
+  '40 mountain climbers per leg, across your rests.',
+  '3 × 10 press-up shoulder taps. Slow, no hip sway.',
+  '30 glute bridges at the end of the session.',
+  '60 seconds of high knees after every movement today.',
+  'Add one rep to every set of your first movement.',
+  'Last set of your first movement: take it to failure.',
+  'Two-second pause at the bottom of every rep, one movement.',
+  'Three seconds down on every rep of one movement.',
+  'Halve your rest on the last movement.',
+  'Drop set to finish: strip a third off, go again.',
+  'One extra set of your weakest movement. You pick which.',
+  'Farmer\'s carry: heaviest you can hold, three trips across the floor.',
+  'Finish with 3 sets of face pulls. Light, high reps.',
+  '100 total reps of one movement. However many sets it takes.',
+  'Superset the last two movements. No rest between them.',
+  '20 calf raises after every movement today.',
+  'Run today\'s session in reverse order.',
+  'Add 2.5kg to your heaviest movement and see what happens.',
+  'Every set today gets one more rep than the app told you to log.'
+];
+const dayKey = () => new Date().toDateString();
+
+function dealWild(){
+  if(!active) return;
+  const had = state.wild && state.wild.text;
+  let t = had;
+  // 12 tries is plenty to miss a repeat in a 30-card deck without looping forever
+  for(let i = 0; i < 12 && t === had; i++) t = WILD[Math.floor(Math.random() * WILD.length)];
+  state.wild = {type: active, text: t, day: dayKey()};
+  persist();
+  paintWild();
+}
+/* Tied to both the session and the day: reopening B tomorrow shouldn't still be
+   showing the card you were dealt for B last week. */
+function paintWild(){
+  const w = state.wild && state.wild.type === active && state.wild.day === dayKey()
+          ? state.wild.text : null;
+  $('wildText').textContent = w || '';
+  $('wildCard').hidden = !w;
+  $('deal').hidden = !!w;
+}
+
 const END_NAME = {low:'the low end', mid:'mid range', top:'the top end'};
 /* Fills blanks, and overwrites anything a previous Low/Mid/Top tap put there —
    but never touches a number that was typed or pulled in by "Same again". */
@@ -614,7 +690,7 @@ function saveSession(){
   s.ts = new Date().toISOString();
   s.id = s.ts + Math.random().toString(36).slice(2,6);
   state.sessions.unshift(s);
-  state.draft = null;
+  state.draft = null; state.wild = null;
   persist();
   active = null;
   TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
@@ -715,6 +791,8 @@ document.querySelectorAll('[data-fill]').forEach(b=>
   b.addEventListener('click', ()=>fillPrescribed(b.dataset.fill)));
 /* Use the last box and a fresh one appears, so an unplanned set is always one
    tap away and the row is never wider than the work actually done. */
+$('deal').addEventListener('click', dealWild);
+$('redeal').addEventListener('click', dealWild);
 $('moves').addEventListener('input', e=>{
   const el = e.target;
   if(!el.matches('.sets input') || !el.value.trim()) return;
@@ -728,7 +806,7 @@ $('exportAll').addEventListener('click', ()=>{
 $('cancel').addEventListener('click', ()=>{
   if(dirty() && !confirm('Clear what you typed?')) return;
   clearTimeout(dt);
-  state.draft = null; persist();
+  state.draft = null; state.wild = null; persist();
   active = null;
   TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
   $('work').hidden = true; $('bar').hidden = true;
