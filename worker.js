@@ -51,6 +51,22 @@ export default {
     if (!Array.isArray(body.lifts))             return json({ error: 'lifts must be an array' }, 400, cors);
     if (body.lifts.length > 20)                 return json({ error: 'too many lifts' }, 400, cors);
 
+    /* An edited session carries the id of the row it already has, and updates
+     * that row in place. Without this the only thing this endpoint could do was
+     * create, so editing anything meant a second row for the same session - and
+     * the Notion connector has no delete, so duplicates are cleared by hand.
+     *
+     * The id is checked hard before it is put in a URL: 32 hex characters, with
+     * or without the usual dashes, and nothing else. This token can write to
+     * every page the integration can see, so a caller must not be able to steer
+     * the request at an arbitrary page, let alone inject path or query. */
+    let pageId = null;
+    if (body.id != null) {
+      const raw = String(body.id).replace(/-/g, '');
+      if (!/^[0-9a-f]{32}$/i.test(raw)) return json({ error: 'id must be a Notion page id' }, 400, cors);
+      pageId = raw;
+    }
+
     const clip = (s, n) => String(s == null ? '' : s).slice(0, n);
     const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
 
@@ -78,16 +94,22 @@ export default {
       ? { type: 'data_source_id', data_source_id: env.NOTION_DS }
       : { database_id: env.NOTION_DB };
 
+    // Update in place when a row is named, otherwise create one. A PATCH takes
+    // no parent: the row already knows which database it lives in.
+    const url  = pageId ? 'https://api.notion.com/v1/pages/' + pageId : 'https://api.notion.com/v1/pages';
+    const verb = pageId ? 'PATCH' : 'POST';
+    const payload = pageId ? { properties: props } : { parent, properties: props };
+
     let res, out;
     try {
-      res = await fetch('https://api.notion.com/v1/pages', {
-        method: 'POST',
+      res = await fetch(url, {
+        method: verb,
         headers: {
           'Authorization': 'Bearer ' + env.NOTION_TOKEN,
           'Notion-Version': version,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ parent, properties: props })
+        body: JSON.stringify(payload)
       });
       out = await res.json().catch(() => ({}));
     } catch (e) {
@@ -95,7 +117,7 @@ export default {
     }
 
     if (!res.ok) return json({ error: out.message || 'Notion rejected the write', status: res.status }, 502, cors);
-    return json({ ok: true, id: out.id, url: out.url }, 200, cors);
+    return json({ ok: true, id: out.id, url: out.url, updated: !!pageId }, 200, cors);
   }
 };
 

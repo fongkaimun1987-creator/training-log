@@ -248,7 +248,21 @@ const RELAY_KEY = 'training-log-relay';
 /* Shown at the foot of the page. The phone is the only place this runs and I
    can't inspect it, so the app has to be able to state its own version and
    whether a relay is stored. */
-const BUILD = 'v13';
+/* This used to be a hand-typed copy of the service worker's cache name, and
+   sat six deploys behind it without anything able to notice. Read the live
+   cache instead - whatever the running worker actually installed is, by
+   definition, the build this page is running. Nothing to keep in step. */
+let BUILD = '\u2026';
+function readBuild(){
+  if(!('caches' in window)){ BUILD = 'n/a'; paintBuild(); return; }
+  caches.keys()
+    .then(keys=>{
+      const k = keys.find(x => x.indexOf('training-log-') === 0);
+      BUILD = k ? k.slice('training-log-'.length) : 'uncached';
+    })
+    .catch(()=>{ BUILD = 'n/a'; })
+    .then(()=>paintBuild());
+}
 /* Declared here, not beside the registration code at the foot of the script:
    paintBuild() reads it during init() and a `let` further down puts it in the
    temporal dead zone, which threw and took the whole sync panel with it. */
@@ -335,6 +349,15 @@ function setRelay(v){
 }
 const unsynced = () => state.sessions.filter(s => !s.synced);
 
+/* Which Notion row a session is. The id has only been stored since editing
+   existed; rows written before that kept just the URL, which ends in the same
+   32 hex characters, so they are still addressable. */
+function notionId(s){
+  if(s.notionId) return s.notionId;
+  const m = String(s.notionUrl || '').match(/([0-9a-f]{32})(?:[?#]|$)/i);
+  return m ? m[1] : null;
+}
+
 /* One session -> one Notion row. Resolves true only when the row actually landed. */
 async function pushOne(s){
   const relay = getRelay();
@@ -342,11 +365,25 @@ async function pushOne(s){
   const r = await fetch(relay, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({type:s.type, ts:s.ts, lifts:s.lifts, bw:s.bw, cardio:s.cardio, note:s.note})
+    // Naming the row turns this into an update of that row. Without the id the
+    // relay can only create, and an edited session would land as a second row.
+    body: JSON.stringify({id: notionId(s) || undefined,
+                          type:s.type, ts:s.ts, lifts:s.lifts, bw:s.bw, cardio:s.cardio, note:s.note})
   });
   const out = await r.json().catch(()=>({}));
   if(!r.ok || !out.ok) throw new Error(out.error || ('relay returned ' + r.status));
   s.synced = true;
+  delete s.drift;
+  /* A worker still running the create-only version ignores the id and makes a
+     second row instead of updating the named one. It cannot be prevented from
+     here - by the time the reply arrives the row exists - but it must not pass
+     silently, because the connector has no delete and the duplicate is cleared
+     by hand. Newer workers answer updated:true. */
+  if(notionId(s) && !out.updated){
+    s.drift = 1;
+    toast('Relay is the old version — that wrote a second Notion row. Redeploy worker.js.');
+  }
+  if(out.id)  s.notionId  = out.id;
   if(out.url) s.notionUrl = out.url;
   persist();
   return true;
@@ -454,9 +491,43 @@ function paintHeader(){
   $('nextB').hidden = due !== 'B';
 }
 
+/* id of the saved session being edited, or null for a new one. */
+let editing = null;
+
+function endEdit(){
+  editing = null;
+  $('save').textContent = 'Save session';
+  $('cancel').textContent = 'Clear';
+}
+
+/* Reopens a saved session in the same form it was entered in. `over` is an
+   in-progress edit picked up from the draft after a reload. */
+function editSession(id, over){
+  const s = state.sessions.find(x => x.id === id);
+  if(!s) return;
+  if(active && dirty() && !confirm('Open that session for editing? What you typed will be cleared.')) return;
+  clearTimeout(dt);
+  editing = id;
+  active = s.type;
+  TYPES.forEach(t=>{
+    const el = $('pick'+t);
+    el.classList.toggle('on', t === s.type);
+    el.setAttribute('aria-pressed', String(t === s.type));
+  });
+  buildForm(s.type, over || s);
+  paintWild();
+  $('work').hidden = false; $('bar').hidden = false;
+  $('flag').hidden = !PLAN[s.type].flag;
+  $('save').textContent = 'Save changes';
+  $('cancel').textContent = 'Cancel';
+  $('save').disabled = !dirty();
+  $('work').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
 function choose(type){
-  if(active === type){ return; }
+  if(active === type && !editing){ return; }
   if(active && dirty() && !confirm('Switch session? What you typed will be cleared.')) return;
+  endEdit();
   active = type;
   TYPES.forEach(t=>{
     const el = $('pick'+t);
@@ -666,9 +737,21 @@ function collect(){
     bw: $('bw').value.trim(), cardio: $('cardio').value.trim(), note: $('note').value.trim()
   };
 }
+/* The comparable content of a session, so an edit can tell whether anything
+   actually changed. ts, type and sync state are deliberately not in here. */
+function sig(o){
+  return JSON.stringify({
+    lifts: (o.lifts || []).map(l => [l.n, l.weight || '', l.reps || '']),
+    bw: o.bw || '', cardio: o.cardio || '', note: o.note || ''
+  });
+}
 function dirty(){
   if(!active) return false;
   const d = collect();
+  if(editing){
+    const s = state.sessions.find(x => x.id === editing);
+    return !!s && sig(d) !== sig(s);      // "changed", not "has anything in it"
+  }
   return d.lifts.some(l=>l.reps) || !!d.bw || !!d.cardio || !!d.note;
 }
 let dt;
@@ -677,7 +760,7 @@ function saveDraft(){
   clearTimeout(dt);
   dt = setTimeout(()=>{
     if(!active) return;        // saved or cleared while the timer was pending
-    state.draft = collect();
+    state.draft = Object.assign(collect(), editing ? {editing} : {});
     persist();
   }, 600);
 }
@@ -720,7 +803,36 @@ function repairSingleReps(){
 }
 
 /* ---------- save + ledger ---------- */
+/* An edit rewrites the row it came from. ts and type stay put, so the session
+   keeps its place in the ledger and its date in Notion. */
+function saveEdit(){
+  const s = state.sessions.find(x => x.id === editing);
+  if(!s || !dirty()) return;
+  clearTimeout(dt);
+  const d = collect();
+  s.lifts = d.lifts; s.bw = d.bw; s.cardio = d.cardio; s.note = d.note;
+  if(notionId(s)){
+    s.synced = false;            // re-push, but as an update of that same row
+    delete s.drift;
+  } else if(s.synced){
+    /* Written to Notion before ids were kept and the URL is gone too, so there
+       is no row to aim at. Re-pushing would create a duplicate and the connector
+       cannot delete one, so the app says so instead of guessing. */
+    s.drift = 1;
+  }
+  state.draft = null;
+  persist();
+  endEdit();
+  active = null;
+  TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
+  $('work').hidden = true; $('bar').hidden = true;
+  paintHeader(); paintLedger(); paintSync();
+  toast(s.drift ? 'Saved here — Notion still has the old version' : 'Session updated');
+  pushPending(false);
+}
+
 function saveSession(){
+  if(editing) return saveEdit();
   if(!dirty()) return;
   clearTimeout(dt);            // a pending draft write would resurrect this session
   const s = collect();
@@ -729,6 +841,7 @@ function saveSession(){
   state.sessions.unshift(s);
   state.draft = null; state.wild = null;
   persist();
+  endEdit();
   active = null;
   TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
   $('work').hidden = true; $('bar').hidden = true;
@@ -772,18 +885,27 @@ function paintLedger(){
       '<span class="stamp">' + stamp(s.ts) + '</span>' +
       '<span class="rest">' + ago(s.ts) + (s.bw ? ' · ' + s.bw + 'kg' : '') + '</span>' +
       (getRelay() && !s.synced ? '<span class="pending">not synced</span>' : '') +
+      (s.drift ? '<span class="pending">Notion out of date</span>' : '') +
     '</div>' +
     (liftLines(s) ? '<p class="lifts">' + esc(liftLines(s)) + '</p>' : '') +
     (s.note ? '<p class="lifts">' + esc(s.note) + '</p>' : '') +
-    '<div class="acts"><button data-copy="' + s.id + '">Copy</button>' +
+    '<div class="acts"><button data-edit="' + s.id + '">Edit</button>' +
+    '<button data-copy="' + s.id + '">Copy</button>' +
     '<button data-del="' + s.id + '">Delete</button></div></div>'
   ).join('');
+  $('rows').querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>
+    editSession(b.dataset.edit)));
   $('rows').querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',()=>
     copy(asText(state.sessions.find(x=>x.id === b.dataset.copy)))));
   $('rows').querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click', ()=>{
     if(!confirm('Delete this session?')) return;
+    if(editing === b.dataset.del){
+      endEdit(); active = null;
+      TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
+      $('work').hidden = true; $('bar').hidden = true;
+    }
     state.sessions = state.sessions.filter(x=>x.id !== b.dataset.del);
-    persist(); paintHeader(); paintLedger();
+    persist(); paintHeader(); paintLedger(); paintSync();
   }));
 }
 
@@ -841,9 +963,10 @@ $('exportAll').addEventListener('click', ()=>{
   copy(allText());
 });
 $('cancel').addEventListener('click', ()=>{
-  if(dirty() && !confirm('Clear what you typed?')) return;
+  if(dirty() && !confirm(editing ? 'Discard these changes?' : 'Clear what you typed?')) return;
   clearTimeout(dt);
   state.draft = null; state.wild = null; persist();
+  endEdit();
   active = null;
   TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
   $('work').hidden = true; $('bar').hidden = true;
@@ -852,10 +975,18 @@ $('cancel').addEventListener('click', ()=>{
 (function init(){
   load();
   repairSingleReps();   // before pushPending, so anything that does go out goes out correct
+  readBuild();
+  /* On a first launch the worker has not populated its cache yet, so the read
+     above finds nothing. Ask once more when it goes active, or the footer reads
+     "uncached" until the next reload. */
+  if(navigator.serviceWorker) navigator.serviceWorker.ready.then(readBuild).catch(()=>{});
   $('relay').value = getRelay();
   paintHeader(); paintLedger(); paintSync();
   pushPending(false);   // catch up anything logged offline last session
-  if(state.draft && state.draft.type){
+  if(state.draft && state.draft.editing){
+    editSession(state.draft.editing, state.draft);
+    toast('Picked up that edit where you left off');
+  } else if(state.draft && state.draft.type){
     choose(state.draft.type);
     toast('Picked up where you left off');
   }

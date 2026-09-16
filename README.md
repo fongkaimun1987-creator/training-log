@@ -52,6 +52,16 @@ row. The token lives in Cloudflare as an encrypted secret and never reaches the 
 
     phone  ->  your Cloudflare Worker (holds the token)  ->  Notion API
 
+A POST carrying an `id` **updates that row** rather than creating one; without an `id` it
+creates. That is what makes editing a saved session safe — the alternative was a second Notion
+row for the same session, and the connector has no delete. The id is checked against a strict
+32-hex pattern before it goes anywhere near a URL, because the token can write to every page the
+integration can see.
+
+⚠ **Editing needs the worker redeployed.** The app sends the `id`; a worker still running the
+create-only version will ignore it and write a duplicate row. Redeploy `worker.js` before
+relying on Edit.
+
 ### Setting it up
 
 1. **Notion integration.** notion.so/my-integrations → New integration → internal, this
