@@ -682,6 +682,43 @@ function saveDraft(){
   }, 600);
 }
 
+/* One-shot repair for sessions logged before the reps field took one box per
+   set. Back then a movement's whole result went in as a single number: a bare
+   "8" on a three-set movement meant three sets of eight, but it parses as one
+   set, so reps.length never reaches m.sets and that movement sits on "Hold"
+   forever.
+
+   Only a plain number small enough to be one set's reps is expanded. Anything
+   bigger is more likely mashed digits (876 meaning 8, 7, 6) than a real count,
+   and guessing where to split that would write down history that never
+   happened - those are left alone to be corrected by hand.
+
+   s.synced is deliberately untouched: a repaired row stays synced and is never
+   re-pushed, because the Notion connector has no delete and a duplicate row
+   there has to be cleared manually. */
+const MAX_ONE_SET = 50;
+function repairSingleReps(){
+  if(state.repsRepair) return;
+  let n = 0;
+  (state.sessions || []).forEach(sess=>{
+    const plan = PLAN[sess.type];
+    if(!plan) return;
+    (sess.lifts || []).forEach(l=>{
+      const v = String(l.reps == null ? '' : l.reps).trim();
+      if(!v || !/^[0-9]+$/.test(v)) return;         // blank, or already per-set
+      const m = plan.moves.find(x => x.n === l.n);
+      if(!m) return;
+      const r = parseInt(v, 10);
+      if(!(r >= 1 && r <= MAX_ONE_SET)) return;     // too big to be one set
+      l.reps = Array(m.sets).fill(r).join(', ');
+      n++;
+    });
+  });
+  state.repsRepair = 1;    // set either way: this is a one-time migration, not a cleaner
+  persist();
+  if(n) toast(n + (n === 1 ? ' old row' : ' old rows') + ' expanded to per-set reps');
+}
+
 /* ---------- save + ledger ---------- */
 function saveSession(){
   if(!dirty()) return;
@@ -814,6 +851,7 @@ $('cancel').addEventListener('click', ()=>{
 
 (function init(){
   load();
+  repairSingleReps();   // before pushPending, so anything that does go out goes out correct
   $('relay').value = getRelay();
   paintHeader(); paintLedger(); paintSync();
   pushPending(false);   // catch up anything logged offline last session
