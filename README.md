@@ -174,7 +174,12 @@ That is fine while one phone does the logging. It stops being fine the moment a 
 logs a session: both would write to Notion correctly, but each device's recall would see only its
 own history and quietly give you the wrong "last time" numbers. Silently wrong, not visibly broken.
 
-Considered and deferred on 2026-09-13. If it is wanted later, the shape is:
+Considered and deferred on 2026-09-13. Considered again on 2026-09-19 and deferred again, in
+favour of the file backup above: the risk being insured against is losing the ledger, and a file
+covers that without a hand-deployed worker, a new database property, or a relay URL that can be
+read as well as written to. Read-back is still the only answer to logging from a second device.
+
+If it is wanted later, the shape is:
 
 - a read endpoint on the worker that queries the Training Log
 - the app merges recent sessions on open, local copy still the thing you log into, so offline holds
