@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Training log — A/B</title>
+<title>Training log</title>
 <meta name="theme-color" content="#E8EAE7">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -104,6 +104,25 @@
     font-size:12px;font-weight:500;background:#fff;color:var(--muted)}
   .last{margin:9px 0 0;font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .repeat{border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;font-weight:500;background:#fff}
+
+  /* extras: work done on the day that the session's own list doesn't carry */
+  .extras .mv{border-style:dashed}
+  .extras .mv h3 span{font-weight:500}
+  .extras .acts{margin-top:9px}
+  .carried{color:var(--muted)}
+  .also{margin:6px 0 0;font-size:12px;color:var(--muted);line-height:1.4}
+  .backup{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px}
+  .backup .exportall{margin-top:0}
+  .backup .exportall[hidden]{display:none}
+  .addx{margin-bottom:9px}
+  .addbtn{width:100%;padding:12px;border:1px dashed var(--line);border-radius:var(--r);
+    background:transparent;color:var(--muted);font-size:14.5px;font-weight:500}
+  .addbtn[hidden],.picker[hidden],.addx[hidden]{display:none}
+  .picker{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+  .picker select{font-family:inherit;font-size:16px;color:inherit;background:#fff;
+    border:1px solid var(--line);border-radius:10px;padding:11px 12px;width:100%;margin-bottom:8px}
+  .picker input{margin-bottom:8px}
+  .pickrow{display:grid;grid-template-columns:1fr 1fr;gap:7px}
   .meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
   .note{margin-top:8px}
   .flag{font-size:12.5px;color:var(--muted);border-left:2px solid var(--b);padding:2px 0 2px 10px;margin:14px 0 0}
@@ -195,6 +214,19 @@
     </div>
   </div>
   <div id="moves"></div>
+  <div class="extras" id="extras"></div>
+  <div class="addx" id="addx" hidden>
+    <button class="addbtn" id="addExtra" type="button">+ Add a movement</button>
+    <div class="picker" id="picker" hidden>
+      <select id="xpick" aria-label="Extra movement"></select>
+      <input id="xfree" type="text" placeholder="Movement name" maxlength="40" hidden
+             aria-label="Movement name" autocapitalize="words">
+      <div class="pickrow">
+        <button class="pf" id="xadd" type="button">Add</button>
+        <button class="pf" id="xcancel" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
   <div class="wild" id="wild">
     <button class="deal" id="deal" type="button">Deal a wild card</button>
     <div class="card" id="wildCard" hidden>
@@ -216,6 +248,11 @@
   <p class="count" id="count">Loading…</p>
   <div id="rows"></div>
   <button class="exportall" id="exportAll" hidden>Copy all sessions</button>
+  <div class="backup">
+    <button class="exportall" id="backup" hidden>Download backup</button>
+    <button class="exportall" id="restore">Restore from file</button>
+    <input type="file" id="restoreFile" accept="application/json,.json" hidden>
+  </div>
 </section>
 
 <section class="sync">
@@ -475,6 +512,63 @@ async function copy(text){
   }
 }
 
+/* ---------- backup ---------- */
+/* iOS evicts site data under storage pressure, and sync is one way: Notion is
+   written to and never read. So the only copy of the ledger that can ever come
+   back is one that was taken deliberately. The relay URL is left out of the
+   file on purpose - it is kept out of the repo for the same reason it should
+   not travel in a backup. */
+function backupName(){
+  const d = new Date(), pad = n => String(n).padStart(2,'0');
+  return 'training-log-' + d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + '.json';
+}
+function downloadBackup(){
+  if(!state.sessions.length){ toast('Nothing to back up yet'); return; }
+  const name = backupName();
+  const blob = new Blob([JSON.stringify(
+    {app:'training-log', v:1, exported:new Date().toISOString(), sessions:state.sessions}, null, 1)],
+    {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  toast(state.sessions.length + ' sessions saved as ' + name);
+}
+async function restoreBackup(file){
+  let data = null;
+  try{ data = JSON.parse(await file.text()); }catch(e){ /* handled below */ }
+  const rows = data && Array.isArray(data.sessions) ? data.sessions : null;
+  if(!rows || (data.app && data.app !== 'training-log')){
+    toast('That file is not a backup this app wrote'); return;
+  }
+  /* Keyed by session id, so restoring the same file twice adds nothing, and a
+     session already on the device always wins: it is the newer of the two and
+     its sync flags are the ones that match what Notion actually holds. */
+  const have = new Set(state.sessions.map(x => x.id));
+  const add = rows.filter(x => x && x.id && x.ts && PLAN[x.type] && Array.isArray(x.lifts)
+                               && !have.has(x.id));
+  if(!add.length){
+    toast(rows.length ? 'All ' + rows.length + ' of those are already here' : 'That backup is empty');
+    return;
+  }
+  if(!confirm('Add ' + add.length + ' session' + (add.length>1?'s':'') + ' from that backup?')) return;
+  /* A restored session that is not marked as written goes out on the next sync.
+     If Notion already has it - the backup was taken before it synced - that is
+     a duplicate row, and the connector has no delete. So it is asked, once, and
+     the safe answer is the one that sends nothing. */
+  const pending = add.filter(x => !x.synced);
+  if(pending.length && !confirm(pending.length + (pending.length > 1 ? ' of them are' : ' of them is') +
+      ' not marked as written to Notion.' +
+      '\n\nOK sends them on the next sync. Cancel treats them as already there and sends nothing.')){
+    pending.forEach(x => { x.synced = true; });
+  }
+  state.sessions = state.sessions.concat(add).sort((a,b) => new Date(b.ts) - new Date(a.ts));
+  persist();
+  paintHeader(); paintLedger(); paintSync();
+  toast(add.length + ' session' + (add.length>1?'s':'') + ' restored');
+}
+
 /* ---------- header / choice ---------- */
 function paintHeader(){
   const total = state.sessions.length;
@@ -498,6 +592,16 @@ function endEdit(){
   editing = null;
   $('save').textContent = 'Save session';
   $('cancel').textContent = 'Clear';
+}
+/* Put the form away. Extras belong to the open form only - leaving them in
+   place would carry today's cable flies into the next session you pick. */
+function closeForm(){
+  active = null;
+  extras = [];
+  closePicker();
+  renderExtras();
+  TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
+  $('work').hidden = true; $('bar').hidden = true;
 }
 
 /* Reopens a saved session in the same form it was entered in. `over` is an
@@ -542,43 +646,108 @@ function choose(type){
   $('work').scrollIntoView({behavior:'smooth', block:'start'});
 }
 
+/* What this movement did last time, resolved per movement rather than per
+   session. It used to be `last(type)` - the whole of the most recent session of
+   that type - so one movement left blank there erased that movement's history
+   for good. On 19 Sep a stub Session B carrying nothing but three sets of dips
+   did exactly that in both directions: the dip lost the +5kg it had been held
+   at since the 13th, and every other movement lost its reps, which is where the
+   "10, 10, 10 at 20kg is above target, add 2.5kg" signal lived.
+
+   So two records come back. `cur` is the freshest thing recorded, whatever it
+   is. `carried` is the last session that recorded a load *and* reps together -
+   the only kind of record a progression decision can stand on, since reps at an
+   unknown load say nothing about the load. They are kept apart, and displayed
+   apart, because reading them as one line is how you end up believing you
+   lifted something you didn't. */
+function recall(type, name){
+  let cur = null, carried = null;
+  for(const s of state.sessions){
+    if(s.type !== type) continue;
+    const l = (s.lifts || []).find(x => x.n === name);
+    if(!l || !(l.weight || l.reps)) continue;
+    if(!cur) cur = {weight: l.weight || '', reps: l.reps || '', ts: s.ts, carried: null};
+    if(l.weight && l.reps){ carried = {weight: l.weight, reps: l.reps, ts: s.ts}; break; }
+  }
+  if(cur && carried && !(cur.weight && cur.reps)) cur.carried = carried;
+  return cur;
+}
+/* What goes in the boxes: this movement's own numbers, then the carried ones. */
+function recalledLoad(p){ return p ? (p.weight || (p.carried ? p.carried.weight : '')) : ''; }
+function recalledReps(p){ return p ? (p.reps   || (p.carried ? p.carried.reps   : '')) : ''; }
+function shortDate(iso){
+  return new Date(iso).toLocaleDateString(undefined, {day:'numeric', month:'short'});
+}
+/* The same lift under a different letter. A weighted pull-up is in A, C and D,
+   and each letter keeps its own memory of it, so one lift can quietly drift
+   into three different loads. Shown only when it is more recent than the
+   in-session record, and only ever shown: it never prefills a box and never
+   feeds a progression decision, because the sets around it were different. */
+function elsewhere(type, name, p){
+  for(const s of state.sessions){
+    if(s.type === type) continue;
+    const l = (s.lifts || []).find(x => x.n === name);
+    if(!l || !(l.weight || l.reps)) continue;
+    if(p && new Date(s.ts) <= new Date(p.ts)) return null;
+    return {type: s.type, ts: s.ts, weight: l.weight || '', reps: l.reps || ''};
+  }
+  return null;
+}
+function hintHtml(i, p, also){
+  const bits = p ? [p.weight, p.reps].filter(Boolean) : [];
+  let h = '';
+  if(bits.length){
+    h += '<p class="last">Last: ' + esc(bits.join(' \u2014 ')) +
+      (p.carried ? ' <span class="carried">\u00b7 ' + esc(shortDate(p.carried.ts)) + ': ' +
+                   esc(p.carried.weight + ' \u2014 ' + p.carried.reps) + '</span>' : '') +
+      '<button class="repeat" data-rep="' + i + '">Same again</button></p>';
+  }
+  if(also){
+    h += '<p class="also">Also ' + esc(shortDate(also.ts)) + ', session ' + esc(also.type) + ': ' +
+         esc([also.weight, also.reps].filter(Boolean).join(' \u2014 ')) + '</p>';
+  }
+  return h;
+}
+/* The one number that is a standing fact rather than a fact about today. It was
+   being retyped every session, and it has been the same 76 every time. */
+function lastBodyweight(){
+  for(const s of state.sessions) if(s.bw) return s.bw;
+  return '';
+}
+function fieldsHtml(i, m, w, r){
+  return '<div class="fields">' +
+      '<input type="text" id="w' + i + '" value="' + esc(w) + '" placeholder="Load" aria-label="Load for ' + esc(m.n) + '">' +
+      '<div class="sets" id="r' + i + '" data-mv="' + esc(m.n) + '">' + repsBoxes(i, m, r) + '</div>' +
+    '</div>';
+}
 function buildForm(type, draft){
-  const prev = last(type);
+  extras = draft
+    ? (draft.lifts || []).filter(l => l.x)
+        .map(l => ({n: l.n, weight: l.weight || '', reps: l.reps || ''})).slice(0, MAX_EXTRAS)
+    : [];
   $('moves').innerHTML = PLAN[type].moves.map((m,i)=>{
-    const p = prev ? prev.lifts.find(l=>l.n === m.n) : null;
+    const p = recall(type, m.n);
     const d = draft ? draft.lifts.find(l=>l.n === m.n) : null;
-    const w = d ? d.weight : (p ? p.weight : '');
+    const w = d ? d.weight : recalledLoad(p);
     const r = d ? d.reps : '';
-    const hint = p && (p.weight || p.reps)
-      ? '<p class="last">Last: ' + [p.weight, p.reps].filter(Boolean).join(' — ') +
-        '<button class="repeat" data-rep="' + i + '">Same again</button></p>' : '';
     const prog = progressLine(m, p);
     const earned = prog.indexOf('earned') > -1;
     return '<div class="mv">' +
-      '<h3>' + m.n + '<span>' + targetText(m) + '</span></h3>' +
+      '<h3>' + esc(m.n) + '<span>' + targetText(m) + '</span></h3>' +
       (m.cue ? '<p class="cue">' + esc(m.cue) + '</p>' : '') +
-      '<div class="fields">' +
-        '<input type="text" id="w' + i + '" value="' + esc(w) + '" placeholder="Load" aria-label="Load for ' + esc(m.n) + '">' +
-        '<div class="sets" id="r' + i + '" data-mv="' + esc(m.n) + '">' + repsBoxes(i, m, r) + '</div>' +
-      '</div>' + hint +
+      fieldsHtml(i, m, w, r) +
+      hintHtml(i, p, elsewhere(type, m.n, p)) +
       (prog ? '<p class="prog' + (earned ? ' earned' : '') + '">' + esc(prog) + '</p>' : '') +
       '</div>';
   }).join('');
-  $('bw').value    = draft ? (draft.bw || '')     : '';
+  const bwPrev = lastBodyweight();
+  $('bw').value    = draft ? (draft.bw || '')     : bwPrev;
+  /* Carried, not typed - so it cannot on its own make an untouched form dirty
+     and save an empty session. Typing in it clears the flag like any prefill. */
+  if(!draft && bwPrev) $('bw').dataset.auto = '1'; else delete $('bw').dataset.auto;
   $('cardio').value= draft ? (draft.cardio || '') : '';
   $('note').value  = draft ? (draft.note || '')   : '';
-
-  $('moves').querySelectorAll('[data-rep]').forEach(b=>{
-    b.addEventListener('click', ()=>{
-      const i = +b.dataset.rep, p = last(type).lifts.find(l=>l.n === PLAN[type].moves[i].n);
-      $('w'+i).value = p.weight || ''; repsSet(i, p.reps || '');
-      repBoxes(i).forEach(el=>{ delete el.dataset.auto; }); saveDraft();
-    });
-  });
-  document.querySelectorAll('#work input').forEach(el=>el.addEventListener('input', ()=>{
-    delete el.dataset.auto;   // typed over: prefill leaves it alone from here
-    saveDraft();
-  }));
+  renderExtras();
   $('save').disabled = !dirty();
 }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -610,8 +779,8 @@ function newBox(row, j){
   el.type = 'text'; el.id = row.id + 's' + j; el.inputMode = 'numeric';
   el.maxLength = 3; el.placeholder = '\u2013';
   el.setAttribute('aria-label', 'Set ' + (j+1) + ' reps for ' + (row.dataset.mv || ''));
-  el.addEventListener('input', ()=>{ delete el.dataset.auto; saveDraft(); });
-  row.appendChild(el);
+  row.appendChild(el);   // input is handled by the one listener on #work
+
   return el;
 }
 function ensureBoxes(i, n){
@@ -620,6 +789,117 @@ function ensureBoxes(i, n){
   let boxes = repBoxes(i);
   while(boxes.length < want){ newBox(row, boxes.length); boxes = repBoxes(i); }
   return boxes;
+}
+
+/* ---------- extras ---------- */
+/* Work done on the day that this session's own list doesn't carry. Until now
+   the only way to log three sets of dips after a Session C was to open a second
+   session for them - which is what happened on 19 Sep, and it left a row in the
+   ledger and in Notion that claimed to be a Session B and was really just the
+   dips, with four movements carrying nothing but last time's load.
+
+   Extras ride in the same lifts array with an x flag on them, so the relay
+   contract is unchanged and the worker needs no redeploy to accept one. */
+const EXTRA_MOVES = {
+  'Push': ['Barbell bench press','Incline dumbbell press','Dumbbell shoulder press',
+           'Chest press machine','Cable fly','Triceps pushdown','Skull crusher','Dip','Push-up'],
+  'Pull': ['Lat pulldown','Seated cable row','Chest-supported row','Dumbbell row','Face pull',
+           'Barbell curl','Dumbbell curl','Hammer curl','Shrug','Pull-up','Chin-up'],
+  'Legs': ['Leg press','Hack squat','Front squat','Goblet squat','Walking lunge','Leg extension',
+           'Leg curl','Hip thrust','Calf raise','Deadlift','Trap-bar deadlift'],
+  'Core & carry': ['Plank','Cable crunch','Hanging knee raise','Ab wheel','Farmer\u2019s carry',
+                   'Back extension']
+};
+const MAX_EXTRAS = 6;     // past this it isn't an extra, it's a different session
+const EXTRA_SETS = 3;     // no prescription to read, so start with three boxes
+let extras = [];          // only ever the form that is open; never persisted on its own
+
+const norm = s => String(s == null ? '' : s).trim().toLowerCase();
+/* Everything already on today's card. Two entries under one name would collide
+   in the lifts array, where a movement is found by name. */
+function onCard(){
+  return new Set(PLAN[active].moves.map(m=>norm(m.n)).concat(extras.map(e=>norm(e.n))));
+}
+/* Extras are re-rendered whenever one is added or removed, so what is typed in
+   the others has to be read out of the DOM first or the rebuild loses it. */
+function readExtras(){
+  if(!active) return;
+  const base = PLAN[active].moves.length;
+  extras.forEach((e,k)=>{
+    if(!$('w'+(base+k))) return;
+    e.weight = $('w'+(base+k)).value.trim();
+    e.reps   = repsOf(base+k);
+  });
+}
+function renderExtras(){
+  const host = $('extras');
+  if(!active){ host.innerHTML = ''; $('addx').hidden = true; return; }
+  const base = PLAN[active].moves.length;
+  host.innerHTML = extras.map((e,k)=>{
+    const i = base + k, rec = recall(active, e.n);
+    return '<div class="mv">' +
+      '<h3>' + esc(e.n) + '<span>extra</span></h3>' +
+      fieldsHtml(i, {n:e.n, sets:EXTRA_SETS}, e.weight || '', e.reps || '') +
+      hintHtml(i, rec, elsewhere(active, e.n, rec)) +
+      '<div class="acts"><button type="button" data-x="' + k + '">Remove</button></div>' +
+      '</div>';
+  }).join('');
+  $('addx').hidden = false;
+  $('addExtra').hidden = extras.length >= MAX_EXTRAS;
+  if(extras.length >= MAX_EXTRAS) $('picker').hidden = true;
+}
+function fillPicker(){
+  const has = onCard();
+  const groups = Object.keys(EXTRA_MOVES).map(g=>{
+    const opts = EXTRA_MOVES[g].filter(n=>!has.has(norm(n)))
+      .map(n=>'<option value="' + esc(n) + '">' + esc(n) + '</option>').join('');
+    return opts ? '<optgroup label="' + esc(g) + '">' + opts + '</optgroup>' : '';
+  }).join('');
+  $('xpick').innerHTML = '<option value="">Choose a movement\u2026</option>' + groups +
+    '<option value="__free__">Something else\u2026</option>';
+}
+function openPicker(){
+  fillPicker();
+  $('xfree').value = ''; $('xfree').hidden = true;
+  $('picker').hidden = false; $('addExtra').hidden = true;
+}
+function closePicker(){
+  $('picker').hidden = true;
+  $('addExtra').hidden = !active || extras.length >= MAX_EXTRAS;
+}
+function addExtra(){
+  if(!active) return;
+  const free = $('xpick').value === '__free__';
+  const name = (free ? $('xfree').value : $('xpick').value).trim().slice(0, 40);
+  if(!name){ toast(free ? 'Name the movement first' : 'Pick a movement first'); return; }
+  if(onCard().has(norm(name))){ toast('That one is already on today\u2019s card'); return; }
+  if(extras.length >= MAX_EXTRAS){ toast(MAX_EXTRAS + ' extras is the limit'); return; }
+  readExtras();
+  extras.push({n:name, weight:'', reps:''});
+  closePicker();
+  renderExtras();
+  saveDraft();
+  const w = $('w' + (PLAN[active].moves.length + extras.length - 1));
+  if(w) w.focus();
+}
+function removeExtra(k){
+  if(!extras[k]) return;
+  readExtras();
+  if((extras[k].weight || extras[k].reps) && !confirm('Remove ' + extras[k].n + '?')) return;
+  extras.splice(k, 1);
+  renderExtras();
+  saveDraft();
+}
+/* "Same again" pulls that movement's last numbers in - including a load carried
+   from further back than the reps, which is the whole point of showing it. */
+function sameAgain(i){
+  const row = $('r'+i);
+  const p = row ? recall(active, row.dataset.mv) : null;
+  if(!p) return;
+  $('w'+i).value = recalledLoad(p);
+  repsSet(i, recalledReps(p));
+  repBoxes(i).forEach(el=>{ delete el.dataset.auto; });
+  saveDraft();
 }
 
 function targetText(m){
@@ -636,20 +916,33 @@ function prescribed(m, end){
    set earns the next load. During a cut holding is the win, so this only ever
    says "earned" - it never nags. */
 function progressLine(m, prev){
-  if(!prev || !prev.weight) return '';
-  const reps = String(prev.reps || '').split(',').map(x=>parseInt(x,10)).filter(n=>!isNaN(n));
+  if(!prev || !m.hi) return '';
   const step = STEP[m.kind];
+  const load = recalledLoad(prev);
+  if(!load) return '';        // bodyweight movement, or nothing recorded yet
+  const hold = 'Hold ' + load + '. ' + m.sets + ' \u00d7 ' + m.hi + ' earns +' + step + 'kg.';
+  /* Judge on a session that recorded the load and the reps together. The last
+     one is that session unless it was left half-filled, and a carried record
+     only speaks for a load if it is the same load. */
+  let src = null;
+  if(prev.weight && prev.reps) src = prev;
+  else if(prev.carried && (!prev.weight || prev.carried.weight === prev.weight)) src = prev.carried;
+  if(!src) return hold;
+  const dated = src !== prev ? ' on ' + shortDate(src.ts) : '';
+  const reps = String(src.reps || '').split(',').map(x=>parseInt(x,10)).filter(n=>!isNaN(n));
   /* Only the prescribed sets decide it. Extra boxes only ever appear after
      those, so anything past them is extra volume - a light back-off set must
      not cancel an increase the working sets already earned. */
   const counted = reps.slice(0, m.sets);
   if(counted.length === m.sets && counted.every(r => r >= m.hi)){
-    const num = parseFloat(String(prev.weight).replace(/[^0-9.]/g,''));
+    const num = parseFloat(String(src.weight).replace(/[^0-9.]/g,''));
     const next = isNaN(num) ? null : (num + step);
-    return 'Top of range on all ' + m.sets + ' sets — earned +' + step + 'kg'
+    return 'Top of range on all ' + m.sets + ' sets' + dated + ' \u2014 earned +' + step + 'kg'
          + (next !== null ? ' (try ' + next + 'kg)' : '');
   }
-  return 'Hold ' + prev.weight + '. ' + m.sets + ' × ' + m.hi + ' earns +' + step + 'kg.';
+  return dated ? 'Hold ' + load + ', last full record' + dated + '. '
+               + m.sets + ' \u00d7 ' + m.hi + ' earns +' + step + 'kg.'
+               : hold;
 }
 
 /* A wild card is a dare for today, not a lift. It is deliberately kept out of
@@ -714,12 +1007,11 @@ const END_NAME = {low:'the low end', mid:'mid range', top:'the top end'};
    but never touches a number that was typed or pulled in by "Same again". */
 function fillPrescribed(end){
   if(!active) return;
-  const prev = last(active);
   let n = 0;
   PLAN[active].moves.forEach((m,i)=>{
     const w = $('w'+i), boxes = repBoxes(i);
-    const p = prev ? prev.lifts.find(l=>l.n === m.n) : null;
-    if(!w.value && p && p.weight) w.value = p.weight;
+    const p = recall(active, m.n);
+    if(!w.value && recalledLoad(p)) w.value = recalledLoad(p);
     if(boxes.every(el => !el.value || el.dataset.auto === '1')){
       const v = prescribed(m, end);
       if(v){ repsSet(i, v); boxes.forEach(el=>{ el.dataset.auto = '1'; }); n++; }
@@ -731,9 +1023,15 @@ function fillPrescribed(end){
 }
 
 function collect(){
+  const base = PLAN[active].moves.length;
   return {
     type: active,
-    lifts: PLAN[active].moves.map((m,i)=>({n:m.n, weight:$('w'+i).value.trim(), reps: repsOf(i)})),
+    lifts: PLAN[active].moves.map((m,i)=>({n:m.n, weight:$('w'+i).value.trim(), reps: repsOf(i)}))
+      /* x marks an extra so a reopened session can tell which cards to rebuild.
+         Everything downstream - the ledger, the copy text, the relay - treats it
+         as an ordinary lift, which is exactly what it is. */
+      .concat(extras.map((e,k)=>({n:e.n, weight:$('w'+(base+k)).value.trim(),
+                                  reps: repsOf(base+k), x:1}))),
     bw: $('bw').value.trim(), cardio: $('cardio').value.trim(), note: $('note').value.trim()
   };
 }
@@ -752,7 +1050,7 @@ function dirty(){
     const s = state.sessions.find(x => x.id === editing);
     return !!s && sig(d) !== sig(s);      // "changed", not "has anything in it"
   }
-  return d.lifts.some(l=>l.reps) || !!d.bw || !!d.cardio || !!d.note;
+  return d.lifts.some(l=>l.reps) || (!!d.bw && !$('bw').dataset.auto) || !!d.cardio || !!d.note;
 }
 let dt;
 function saveDraft(){
@@ -803,6 +1101,52 @@ function repairSingleReps(){
 }
 
 /* ---------- save + ledger ---------- */
+/* A changed session has to get back to the row it already has, not a new one.
+   With an id it re-pushes as an update of that row. Without one it was written
+   before ids were kept and the URL is gone too, so there is nothing to aim at:
+   re-pushing would create a duplicate the connector cannot delete, so the app
+   says so instead of guessing. */
+function markForRepush(s){
+  if(notionId(s)){ s.synced = false; delete s.drift; }
+  else if(s.synced){ s.drift = 1; }
+}
+
+/* Everything logged today already has a session to belong to. Before this, a
+   second save on the same day made a second session - which on 19 Sep meant a
+   Session B row that was really three sets of dips done after a Session C, with
+   four movements carrying nothing but last time's load.
+
+   Only movements with reps move across: a load sitting in a box on its own is
+   prefill, not work, and carrying it over is exactly how that row was born. */
+function mergeInto(target, d){
+  const done = d.lifts.filter(l => l.reps);
+  const names = new Set(target.lifts.map(l => norm(l.n)));
+  let filled = 0, added = 0;
+  for(const l of done){
+    const hit = target.lifts.find(t => norm(t.n) === norm(l.n));
+    if(hit && !hit.reps){ hit.weight = l.weight; hit.reps = l.reps; filled++; continue; }
+    /* Same movement twice in a day is a real thing, so it is kept rather than
+       merged into one line that would read as a single run of sets. */
+    const n = hit ? l.n + ' (again)' : l.n;
+    if(names.has(norm(n))) continue;
+    target.lifts.push({n: n, weight: l.weight, reps: l.reps, x: 1});
+    names.add(norm(n)); added++;
+  }
+  if(!filled && !added){ toast('Nothing to add to it'); return; }
+  if(d.bw && !target.bw) target.bw = d.bw;
+  const cm = parseFloat(d.cardio), ct = parseFloat(target.cardio);
+  if(!isNaN(cm)) target.cardio = String(isNaN(ct) ? cm : ct + cm);   // two bouts add up
+  if(d.note) target.note = target.note ? target.note + ' ' + d.note : d.note;
+  markForRepush(target);
+  state.draft = null; state.wild = null;
+  persist();
+  endEdit(); closeForm();
+  paintHeader(); paintLedger(); paintSync();
+  toast('Added to Session ' + target.type + ' \u2014 ' + (filled + added) +
+        ' movement' + (filled + added > 1 ? 's' : ''));
+  pushPending(false);
+}
+
 /* An edit rewrites the row it came from. ts and type stay put, so the session
    keeps its place in the ledger and its date in Notion. */
 function saveEdit(){
@@ -811,40 +1155,48 @@ function saveEdit(){
   clearTimeout(dt);
   const d = collect();
   s.lifts = d.lifts; s.bw = d.bw; s.cardio = d.cardio; s.note = d.note;
-  if(notionId(s)){
-    s.synced = false;            // re-push, but as an update of that same row
-    delete s.drift;
-  } else if(s.synced){
-    /* Written to Notion before ids were kept and the URL is gone too, so there
-       is no row to aim at. Re-pushing would create a duplicate and the connector
-       cannot delete one, so the app says so instead of guessing. */
-    s.drift = 1;
-  }
+  markForRepush(s);
   state.draft = null;
   persist();
   endEdit();
-  active = null;
-  TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
-  $('work').hidden = true; $('bar').hidden = true;
+  closeForm();
   paintHeader(); paintLedger(); paintSync();
   toast(s.drift ? 'Saved here — Notion still has the old version' : 'Session updated');
   pushPending(false);
 }
 
+const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+
 function saveSession(){
   if(editing) return saveEdit();
   if(!dirty()) return;
   clearTimeout(dt);            // a pending draft write would resurrect this session
-  const s = collect();
+  const d = collect();
+
+  const today = state.sessions.find(x => sameDay(x.ts, Date.now()));
+  if(today && confirm('You already logged Session ' + today.type + ' at ' +
+      new Date(today.ts).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}) +
+      ' today.\n\nAdd this to it? Cancel saves it as a separate session.')){
+    return mergeInto(today, d);
+  }
+
+  /* A prescribed movement with no reps is one you didn't do - and the load in
+     its box was put there by the prefill, not by you. Worth one question before
+     it becomes a row, since that row is what the ledger and Notion will show.
+     Not asked when none of them were done: that is an extras-only day. */
+  const planned = PLAN[active].moves.length;
+  const blank = d.lifts.slice(0, planned).filter(l => !l.reps).map(l => l.n);
+  if(blank.length && blank.length < planned &&
+     !confirm('No reps logged for ' + blank.join(', ') + '.\n\nSave the session anyway?')) return;
+
+  const s = d;
   s.ts = new Date().toISOString();
   s.id = s.ts + Math.random().toString(36).slice(2,6);
   state.sessions.unshift(s);
   state.draft = null; state.wild = null;
   persist();
   endEdit();
-  active = null;
-  TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
-  $('work').hidden = true; $('bar').hidden = true;
+  closeForm();
   paintHeader(); paintLedger();
   toast('Session ' + s.type + ' saved — ' + stamp(s.ts));
   window.scrollTo({top: document.body.scrollHeight, behavior:'smooth'});
@@ -877,6 +1229,7 @@ function paintLedger(){
   const n = state.sessions.length;
   $('count').textContent = n ? n + ' session' + (n>1?'s':'') + ' on this device' : '';
   $('exportAll').hidden = !n;
+  $('backup').hidden = !n;      // restore stays available: an empty device is the point
   $('exportAll').textContent = n > 1 ? 'Copy all ' + n + ' sessions' : 'Copy all sessions';
   if(!n){ $('rows').innerHTML = '<p class="empty">Nothing logged yet. Pick A or B above and your first session lands here with its date and time.</p>'; return; }
   $('rows').innerHTML = state.sessions.map(s =>
@@ -900,9 +1253,7 @@ function paintLedger(){
   $('rows').querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click', ()=>{
     if(!confirm('Delete this session?')) return;
     if(editing === b.dataset.del){
-      endEdit(); active = null;
-      TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
-      $('work').hidden = true; $('bar').hidden = true;
+      endEdit(); closeForm();
     }
     state.sessions = state.sessions.filter(x=>x.id !== b.dataset.del);
     persist(); paintHeader(); paintLedger(); paintSync();
@@ -948,28 +1299,59 @@ window.addEventListener('online', ()=>pushPending(false));
 
 document.querySelectorAll('[data-fill]').forEach(b=>
   b.addEventListener('click', ()=>fillPrescribed(b.dataset.fill)));
-/* Use the last box and a fresh one appears, so an unplanned set is always one
-   tap away and the row is never wider than the work actually done. */
 $('deal').addEventListener('click', dealWild);
 $('redeal').addEventListener('click', dealWild);
-$('moves').addEventListener('input', e=>{
+/* One listener on the form rather than a wiring pass per build. Rep boxes grow,
+   and extras arrive, after the form was built - a per-build pass silently
+   misses both, and a missed listener here means a draft that never saves. */
+$('work').addEventListener('input', e=>{
   const el = e.target;
-  if(!el.matches('.sets input') || !el.value.trim()) return;
-  const row = el.closest('.sets'), boxes = Array.from(row.querySelectorAll('input'));
-  if(el === boxes[boxes.length-1]) ensureBoxes(row.id.slice(1), boxes.length + 1);
+  if(!el.matches('input')) return;
+  delete el.dataset.auto;   // typed over: prefill leaves it alone from here
+  /* Use the last box and a fresh one appears, so an unplanned set is always one
+     tap away and the row is never wider than the work actually done. */
+  if(el.matches('.sets input') && el.value.trim()){
+    const row = el.closest('.sets'), boxes = Array.from(row.querySelectorAll('input'));
+    if(el === boxes[boxes.length-1]) ensureBoxes(row.id.slice(1), boxes.length + 1);
+  }
+  saveDraft();
+});
+$('work').addEventListener('click', e=>{
+  const rep = e.target.closest('[data-rep]');
+  if(rep){ sameAgain(+rep.dataset.rep); return; }
+  const rm = e.target.closest('[data-x]');
+  if(rm) removeExtra(+rm.dataset.x);
+});
+$('addExtra').addEventListener('click', openPicker);
+$('xcancel').addEventListener('click', closePicker);
+$('xadd').addEventListener('click', addExtra);
+$('xpick').addEventListener('change', ()=>{
+  const free = $('xpick').value === '__free__';
+  $('xfree').hidden = !free;
+  if(free) $('xfree').focus();
+});
+/* Enter on the free-text field adds it. Done on an iOS keyboard fires this, and
+   without it the name sits there typed but unadded. */
+$('xfree').addEventListener('keydown', e=>{
+  if(e.key === 'Enter'){ e.preventDefault(); addExtra(); }
 });
 $('exportAll').addEventListener('click', ()=>{
   if(!state.sessions.length) return;
   copy(allText());
+});
+$('backup').addEventListener('click', downloadBackup);
+$('restore').addEventListener('click', ()=> $('restoreFile').click());
+$('restoreFile').addEventListener('change', e=>{
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';        // same file twice in a row still fires
+  if(f) restoreBackup(f);
 });
 $('cancel').addEventListener('click', ()=>{
   if(dirty() && !confirm(editing ? 'Discard these changes?' : 'Clear what you typed?')) return;
   clearTimeout(dt);
   state.draft = null; state.wild = null; persist();
   endEdit();
-  active = null;
-  TYPES.forEach(t=>{ $('pick'+t).classList.remove('on'); $('pick'+t).setAttribute('aria-pressed','false'); });
-  $('work').hidden = true; $('bar').hidden = true;
+  closeForm();
 });
 
 (function init(){

@@ -1,6 +1,6 @@
-# Training log — A/B
+# Training log
 
-A single-page A/B training logger that runs from the iPhone home screen, offline.
+A single-page A/B/C/D training logger that runs from the iPhone home screen, offline.
 One HTML file, one worker, one manifest, three icons. No build step, no framework,
 no dependencies, no network calls at runtime.
 
@@ -25,6 +25,21 @@ pasted into the Notion database *Training Log*, which is the system of record �
 **Copy all sessions** at the bottom of the ledger is for. It emits every session in the same
 plain-text block the per-session Copy uses, newest first, blank line between.
 
+## Extras: work the session's own list doesn't carry
+
+Under the movements is **+ Add a movement**. Pick from the list of things that are in every gym,
+grouped push / pull / legs / core, or choose *Something else...* and type a name. Up to six, each
+with the same load box and per-set rep boxes as a prescribed movement, each with a **Remove**.
+
+An extra is stored in the session's `lifts` array with an `x` flag and is otherwise an ordinary
+lift - it copies, it exports, it syncs. **The relay contract is unchanged, so the worker needs no
+redeploy to accept one.**
+
+This exists because of 19 Sep 2026. Three sets of dips after a Session C had nowhere to go, so
+they were logged as a whole second Session B - a row in the ledger and in Notion that claimed to
+be a session and was really four movements' worth of last time's loads with nothing done to them.
+Extra work now lands on the session it was actually done in.
+
 ## Filling it in when you can't be bothered
 
 Above the movements are three buttons — **Low**, **Mid**, **Top**. Each fills every blank rep
@@ -40,6 +55,63 @@ caught before it lands in the ledger.
 
 Tapping a second one re-fills whatever the first put there, so Low → Top is fine. Anything you
 typed yourself, or pulled in with **Same again**, is left alone.
+
+## Two questions it asks before saving
+
+**"You already logged Session C at 11:40 today. Add this to it?"** Answering yes moves what you
+just logged onto that session as extras and updates its existing Notion row in place. Only
+movements with reps move across - a load sitting in a box on its own is prefill, not work, and
+carrying it over is precisely how the 19 Sep row was born. Cardio minutes add together; a second
+run at the same movement is kept as its own line rather than merged into one.
+
+**"No reps logged for Lateral raise, Weighted hanging leg raise. Save anyway?"** A prescribed
+movement with no reps is one you didn't do, and the load in its box was put there by the prefill.
+Not asked when *none* of them were done - that is an extras-only day and it is allowed.
+
+## What "Last:" is allowed to say
+
+Recall is resolved **per movement**, not per session. It used to take the whole of the most recent
+session of that type, so one movement left blank there erased that movement's history for good.
+
+Two records come back: the freshest thing recorded for that movement, and - if that record is
+half-filled - the last session that recorded a load **and** reps together. They are displayed
+apart (`Last: 10, 10, 10 | 13 Sept: +5kg - 8, 8, 8, 8`) and never joined, because reading them as
+one line is how you end up believing you lifted something you didn't.
+
+A progression decision only ever stands on a record that has both, and a carried record only
+speaks for a load if it is the same load. The date is named whenever the judgement came from an
+older session than the last one.
+
+Both directions of this were live bugs on 19 Sep: the stub Session B took the +5kg off the dip
+recall, and it swallowed `20kg x 10, 10, 10` on the overhead press - which was the one lift
+sitting above its rep target and due an increase.
+
+Under that, when the same movement was logged more recently under a different letter, a muted
+line says so: `Also 17 Sept, session D: 5kg - 5, 5, 5, 4`. A weighted pull-up lives in A, C and D
+and each letter keeps its own memory of it, so the one lift can quietly drift into three
+different loads. It is shown and nothing more - it never prefills a box and never feeds a
+progression decision, because the sets around it were different.
+
+**Bodyweight** prefills from the last session that recorded one. It is the one number that is a
+standing fact rather than a fact about today, and it was being retyped every time. A prefilled
+bodyweight does not on its own count as having typed something, so it can't save an empty session.
+
+## Backup and restore
+
+**Download backup** writes every session to a `training-log-YYYY-MM-DD.json` file.
+**Restore from file** reads one back.
+
+Restore is keyed by session id, so the same file twice adds nothing, and a session already on the
+device always wins - it is the newer of the two, and its sync flags are the ones that match what
+Notion actually holds. If any restored session is not marked as written to Notion, it asks once
+before agreeing to send it: the backup may predate that session's sync, and a second write means
+a duplicate row the connector cannot delete.
+
+The relay URL is deliberately **not** in the file. It is kept out of the repo for the same reason
+it should not travel in a backup.
+
+This exists because iOS evicts site data under storage pressure and sync is one way: Notion is
+written to and never read. The only copy of the ledger that can come back is one you took.
 
 ## Notion sync (optional)
 
@@ -146,10 +218,12 @@ desktop browser, unregister the worker in DevTools → Application → Service W
 
 ## Deliberate, not oversights
 
-- **Two sessions, A and B**, five movements each, all visible on open. Not behind a tap.
+- **Four sessions.** A and B alternate, five movements each; C substitutes for either, D is the
+  short one. All visible on open, not behind a tap.
 - **Last-time recall per movement** with *Same again*. During a cut the goal is holding load,
   so the previous numbers stay visible while typing.
-- **Reps as free text** (`8, 7, 6, 6`), not one input per set. Faster on a phone.
+- **One rep box per set**, growing by one when the last is used. The numeric keypad has no comma
+  key, so the single free-text field this replaced could never actually be typed on a phone.
 - **Draft autosave**, 600ms after the last keystroke. A session gets logged in pieces across
   45 minutes; closing the app mid-session loses nothing.
 - **No *blocking* Notion write.** The original rule was "no API integration at all", because a
