@@ -96,6 +96,40 @@ progression decision, because the sets around it were different.
 standing fact rather than a fact about today, and it was being retyped every time. A prefilled
 bodyweight does not on its own count as having typed something, so it can't save an empty session.
 
+But see below: a prefilled number is no longer allowed to pass as a measurement.
+
+## What a bodyweight reading is allowed to claim
+
+The prefill above was quietly manufacturing data. A carried number saved and synced exactly like a
+typed one, and nothing on the row said which it was. On 20 Sept 2026 the Notion database held five
+sessions and **every one read 76kg** - arithmetically indistinguishable from one number typed on
+the 13th and carried forward four times. Nobody could have caught it by looking.
+
+So every session now records how its bodyweight got there:
+
+| `bwEntry` | Means | In the ledger |
+|---|---|---|
+| `typed` | Entered for this session | `75.4kg` |
+| `carried` | The prefill put it there and nobody touched it | `76kg carried` |
+| *absent* | Logged before this build - unknowable | `76kg unverified` |
+
+While a carried number is sitting in the box it says so: the field goes dashed and muted, with
+*"Carried from 19 Sept - type today's weight to record one."* under it. Typing anything clears
+both, the same way typing over any prefill does. Reopening a saved session restores whichever
+state it was saved in, so resaving an old row can't silently promote it to a measurement.
+
+The number still prefills. It is genuinely useful and the weigh-in is a two-second job at the
+scale. What changed is that it can no longer lie about where it came from.
+
+**Migration: there isn't one.** Sessions logged before this build have no `bwEntry` and are left
+exactly as they are - nothing is rewritten, nothing is guessed, and the app doesn't touch storage
+on first open. An absent value means *unknown*, which is the only honest reading of those rows.
+They are not backfilled into any weight series, for the same reason.
+
+⚠ **Notion can't see this yet.** The relay still sends `bw` as a bare number to the `Bodyweight`
+column, so a carried reading lands there looking like any other. Teaching Notion the difference
+needs an `Entry` property and a worker redeploy - that is the next phase, not this one.
+
 ## Backup and restore
 
 **Download backup** writes every session to a `training-log-YYYY-MM-DD.json` file.
@@ -147,6 +181,16 @@ relying on Edit.
    - `ALLOWED_ORIGIN` — plain var, `https://fongkaimun1987-creator.github.io`
    - `NOTION_DS` — only if a write fails complaining about data sources; set it to
      `6af8ccf0-3d3f-4765-a137-ea01ae28beb1` and the worker switches to the newer API automatically
+   - `NOTION_WEIGHT_DB` — plain var, `7e0da55c-6ea4-497b-af15-f64e701956be`, the **Weight**
+     database. Leave it unset and weight rows are simply not written; everything else still works.
+   - `NOTION_WEIGHT_DS` — the same data-source fallback as `NOTION_DS`, for the Weight database:
+     `55ac4c6f-0eec-4b11-98a3-bb7ce1bb32a5`
+
+   The Weight database needs its own **Connections → add the integration**, exactly like the
+   Training Log. Sharing a parent page is not enough; without it every weight write returns 404.
+
+   A weight row is only written when the app sends `bwEntry` - so this worker can be deployed
+   ahead of the app that feeds it, and nothing changes until that app ships.
 4. **In the app**, scroll to *Notion sync* and paste the worker URL.
 
 ### Why the URL is typed in, not committed

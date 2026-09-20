@@ -9,6 +9,9 @@
  *   NOTION_DB       var     - the Training Log database id  (classic path)
  *   NOTION_DS       var     - the data source id, if the classic path is refused
  *   ALLOWED_ORIGIN  var     - https://fongkaimun1987-creator.github.io
+ *   NOTION_WEIGHT_DB var    - the Weight database id. Without it, weight rows are
+ *                             simply not written and everything else still works.
+ *   NOTION_WEIGHT_DS var    - the Weight data source id, same fallback as NOTION_DS
  */
 
 /* Notion moved databases to a "data source" model. Older tokens/databases still
@@ -26,6 +29,16 @@ const TYPE_NAMES = {
   D: 'D - Quick & dirty'
 };
 const NEW_VERSION = '2025-09-03';
+
+/* The weight series carries two flags, and both are closed sets mapped to exact
+ * Notion option names - a typo must never quietly invent a new option.
+ *
+ * Neither is ever sent as an empty value. This relay cannot clear a Notion
+ * property: an omitted property keeps whatever Notion already had, so a blank
+ * would silently inherit the previous row's flag. Absent means "don't write it";
+ * it never means "false". */
+const ENTRY_NAMES = { typed: 'Typed', carried: 'Carried' };
+const MEAL_NAMES  = { pre: 'Pre-meal', post: 'Post-meal' };
 
 export default {
   async fetch(request, env) {
@@ -65,6 +78,17 @@ export default {
       const raw = String(body.id).replace(/-/g, '');
       if (!/^[0-9a-f]{32}$/i.test(raw)) return json({ error: 'id must be a Notion page id' }, 400, cors);
       pageId = raw;
+    }
+
+    /* Same treatment for the weight row's own id, and for the same reason: it
+     * goes into a URL, and this token can write to every page the integration
+     * can see. Validated here rather than inside the weight write, so a bad id
+     * is refused before the session row is created. */
+    let weightId = null;
+    if (body.weightId != null) {
+      const raw = String(body.weightId).replace(/-/g, '');
+      if (!/^[0-9a-f]{32}$/i.test(raw)) return json({ error: 'weightId must be a Notion page id' }, 400, cors);
+      weightId = raw;
     }
 
     const clip = (s, n) => String(s == null ? '' : s).slice(0, n);
@@ -117,9 +141,75 @@ export default {
     }
 
     if (!res.ok) return json({ error: out.message || 'Notion rejected the write', status: res.status }, 502, cors);
-    return json({ ok: true, id: out.id, url: out.url, updated: !!pageId }, 200, cors);
+
+    /* The weight series is a second row in a second database, written only when
+     * the app says how the number got there. That guard is what lets this worker
+     * be deployed before the app that feeds it: an older app sends no bwEntry, so
+     * no weight row is written, and nothing here changes for it.
+     *
+     * It is deliberately written after the session row and never allowed to fail
+     * it. The session is the thing that would hurt to lose; a weight row that did
+     * not land is reported back and retried, not rolled back - and the Notion
+     * connector has no delete, so a half-written pair must never be resolved by
+     * writing more rows. */
+    let weight = null;
+    if (bw !== null && body.bwEntry && weightTarget(env)) {
+      weight = await writeWeight(env, body, bw, ts, weightId);
+    }
+
+    return json({ ok: true, id: out.id, url: out.url, updated: !!pageId, weight }, 200, cors);
   }
 };
+
+function weightTarget(env) {
+  return env.NOTION_WEIGHT_DS
+    ? { type: 'data_source_id', data_source_id: env.NOTION_WEIGHT_DS }
+    : (env.NOTION_WEIGHT_DB ? { database_id: env.NOTION_WEIGHT_DB } : null);
+}
+
+async function writeWeight(env, body, bw, ts, weightId) {
+  const entry = ENTRY_NAMES[String(body.bwEntry).toLowerCase()];
+  if (!entry) return { ok: false, error: 'bwEntry must be typed or carried' };
+
+  const props = {
+    'Weigh-in':   { title: [{ text: { content: ts.slice(0, 10) + ' \u2014 ' + bw + 'kg' } }] },
+    'Date':       { date: { start: ts } },
+    'Reading kg': { number: bw },
+    'Entry':      { select: { name: entry } },
+    // body.type was checked against TYPE_NAMES before any of this ran.
+    'Session':    { select: { name: body.type } }
+  };
+
+  const meal = MEAL_NAMES[String(body.meal || '').toLowerCase()];
+  if (meal) props['Meal'] = { select: { name: meal } };
+
+  const trend = parseFloat(body.trend);
+  if (Number.isFinite(trend)) props['Trend kg'] = { number: trend };
+
+  const useDS   = !!env.NOTION_WEIGHT_DS;
+  const version = useDS ? NEW_VERSION : OLD_VERSION;
+  const url     = weightId ? 'https://api.notion.com/v1/pages/' + weightId : 'https://api.notion.com/v1/pages';
+  const payload = weightId
+    ? { properties: props }
+    : { parent: weightTarget(env), properties: props };
+
+  try {
+    const res = await fetch(url, {
+      method: weightId ? 'PATCH' : 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + env.NOTION_TOKEN,
+        'Notion-Version': version,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: out.message || 'Notion rejected the weight row', status: res.status };
+    return { ok: true, id: out.id, updated: !!weightId };
+  } catch (e) {
+    return { ok: false, error: 'could not reach Notion: ' + e.message };
+  }
+}
 
 function json(obj, status, cors) {
   return new Response(JSON.stringify(obj), {
