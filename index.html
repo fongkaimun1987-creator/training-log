@@ -126,6 +126,10 @@
   .meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
   .meta input.carried{border-style:dashed;color:var(--muted)}
   .bwhint{font-size:12.5px;color:var(--muted);line-height:1.4;margin:7px 0 0}
+  .mealrow{margin:11px 0 0}
+  .mealrow span{display:block;font-size:12.5px;color:var(--muted);margin:0 0 7px}
+  .pf-row.two{grid-template-columns:repeat(2,1fr)}
+  .pf.on{background:var(--ink);color:#fff;border-color:var(--ink)}
   .note{margin-top:8px}
   .flag{font-size:12.5px;color:var(--muted);border-left:2px solid var(--b);padding:2px 0 2px 10px;margin:14px 0 0}
 
@@ -242,6 +246,13 @@
     <input id="cardio" type="text" inputmode="numeric" placeholder="Incline mins">
   </div>
   <p class="bwhint" id="bwhint" hidden></p>
+  <div class="mealrow" id="mealrow" hidden>
+    <span>Had you eaten before this weigh-in?</span>
+    <div class="pf-row two">
+      <button class="pf" data-meal="pre"  type="button" aria-pressed="false">Pre-meal</button>
+      <button class="pf" data-meal="post" type="button" aria-pressed="false">Post-meal</button>
+    </div>
+  </div>
   <input class="note" id="note" type="text" placeholder="One note, if anything felt off">
   <p class="flag" id="flag" hidden>Standing lifts today. Lightheadedness under the bar is a stop signal, not something to push through.</p>
 </div>
@@ -402,16 +413,45 @@ function notionId(s){
 async function pushOne(s){
   const relay = getRelay();
   if(!relay) return false;
+  /* Captured before the reply can assign one: the drift check below asks
+     whether this push NAMED a row, and reading it back afterwards would report
+     every fresh create as a duplicate. */
+  const sentId = notionId(s);
+  /* Only a typed reading joins the weight series. A carried number rides along
+     on the session row as context and is never offered as a measurement, which
+     is also what keeps every row in that database answerable on its meal. */
+  const typed = s.bwEntry === 'typed' && !!s.bw;
   const r = await fetch(relay, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     // Naming the row turns this into an update of that row. Without the id the
     // relay can only create, and an edited session would land as a second row.
-    body: JSON.stringify({id: notionId(s) || undefined,
-                          type:s.type, ts:s.ts, lifts:s.lifts, bw:s.bw, cardio:s.cardio, note:s.note})
+    body: JSON.stringify({id: sentId || undefined,
+                          weightId: s.weightId || undefined,
+                          type:s.type, ts:s.ts, lifts:s.lifts, bw:s.bw,
+                          bwEntry: typed ? 'typed' : undefined,
+                          meal:    typed ? (s.meal || undefined) : undefined,
+                          cardio:s.cardio, note:s.note})
   });
   const out = await r.json().catch(()=>({}));
   if(!r.ok || !out.ok) throw new Error(out.error || ('relay returned ' + r.status));
+
+  /* Ids first, and persisted before anything below can throw. Both rows exist
+     by now; losing an id would make the retry create a second one, which is the
+     single failure this path exists to prevent. */
+  if(out.id)  s.notionId  = out.id;
+  if(out.url) s.notionUrl = out.url;
+  if(out.weight && out.weight.id) s.weightId = out.weight.id;
+
+  /* The weight row is written after the session row and can fail alone - an
+     unconnected database answers 404. The session stays unsynced so the whole
+     push retries, which is safe now both ids are stored: a retry updates two
+     rows rather than creating them. */
+  if(out.weight && out.weight.ok === false){
+    persist();
+    throw new Error('weight row: ' + (out.weight.error || 'rejected'));
+  }
+
   s.synced = true;
   delete s.drift;
   /* A worker still running the create-only version ignores the id and makes a
@@ -419,12 +459,10 @@ async function pushOne(s){
      here - by the time the reply arrives the row exists - but it must not pass
      silently, because the connector has no delete and the duplicate is cleared
      by hand. Newer workers answer updated:true. */
-  if(notionId(s) && !out.updated){
+  if(sentId && !out.updated){
     s.drift = 1;
     toast('Relay is the old version — that wrote a second Notion row. Redeploy worker.js.');
   }
-  if(out.id)  s.notionId  = out.id;
-  if(out.url) s.notionUrl = out.url;
   persist();
   return true;
 }
@@ -739,6 +777,35 @@ function paintBwHint(){
   $('bwhint').hidden = !on;
 }
 
+/* A lunch and a drink is ~0.5-1.0kg of transit mass. Against the ~0.8-1.2kg
+   spread of gym weighing that is absorbed - as long as the mix of pre- and
+   post-meal readings stays stable. A drifting mix injects a spurious half-kilo
+   step that is arithmetically indistinguishable from real loss, so the one tap
+   buys the ability to filter the series later, which nothing else can recover.
+
+   "Had you eaten yet" is a fact you already know at the scale. "Within three
+   hours" is a calculation, and a question you have to work out is a question
+   that gets answered carelessly for four weeks. */
+function mealPick(){
+  const b = $('mealrow').querySelector('.pf.on');
+  return b ? b.dataset.meal : '';
+}
+function setMeal(v){
+  $('mealrow').querySelectorAll('.pf').forEach(b=>{
+    const on = !!v && b.dataset.meal === v;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+}
+/* Asked only of a number that was actually weighed. A carried number is not a
+   measurement and never reaches the weight series, so its meal would describe
+   nothing - and a blank answer on a row nobody can delete is worse than no row. */
+function paintMeal(){
+  const el = $('bw'), typed = !!el.value.trim() && el.dataset.auto !== '1';
+  $('mealrow').hidden = !typed;
+  if(!typed) setMeal('');
+}
+
 /* Sessions logged before this build carry no entry state and there is no way to
    recover it, so they read "unverified" rather than pass as weighed. */
 function bwMark(s){
@@ -780,6 +847,8 @@ function buildForm(type, draft){
   const carried = draft ? (draft.bwEntry === 'carried' && !!draft.bw) : !!bwPrev;
   if(carried) $('bw').dataset.auto = '1'; else delete $('bw').dataset.auto;
   paintBwHint();
+  setMeal(draft ? (draft.meal || '') : '');
+  paintMeal();
   $('cardio').value= draft ? (draft.cardio || '') : '';
   $('note').value  = draft ? (draft.note || '')   : '';
   renderExtras();
@@ -1072,6 +1141,7 @@ function collect(){
        Without it the series cannot be read: a flat run of identical readings
        looks the same either way, and one of the two ways is not data. */
     bwEntry: $('bw').value.trim() ? ($('bw').dataset.auto === '1' ? 'carried' : 'typed') : '',
+    meal: mealPick(),
     cardio: $('cardio').value.trim(), note: $('note').value.trim()
   };
 }
@@ -1080,7 +1150,7 @@ function collect(){
 function sig(o){
   return JSON.stringify({
     lifts: (o.lifts || []).map(l => [l.n, l.weight || '', l.reps || '']),
-    bw: o.bw || '', bwEntry: o.bwEntry || '',
+    bw: o.bw || '', bwEntry: o.bwEntry || '', meal: o.meal || '',
     cardio: o.cardio || '', note: o.note || ''
   });
 }
@@ -1174,7 +1244,9 @@ function mergeInto(target, d){
     names.add(norm(n)); added++;
   }
   if(!filled && !added){ toast('Nothing to add to it'); return; }
-  if(d.bw && !target.bw){ target.bw = d.bw; target.bwEntry = d.bwEntry || ''; }
+  if(d.bw && !target.bw){
+    target.bw = normBw(d.bw); target.bwEntry = d.bwEntry || ''; target.meal = d.meal || '';
+  }
   const cm = parseFloat(d.cardio), ct = parseFloat(target.cardio);
   if(!isNaN(cm)) target.cardio = String(isNaN(ct) ? cm : ct + cm);   // two bouts add up
   if(d.note) target.note = target.note ? target.note + ' ' + d.note : d.note;
@@ -1195,7 +1267,10 @@ function saveEdit(){
   if(!s || !dirty()) return;
   clearTimeout(dt);
   const d = collect();
+  if(!mealAnswered(d)) return;
+  d.bw = normBw(d.bw);
   s.lifts = d.lifts; s.bw = d.bw; s.cardio = d.cardio; s.note = d.note;
+  s.bwEntry = d.bwEntry; s.meal = d.meal;
   markForRepush(s);
   state.draft = null;
   persist();
@@ -1206,6 +1281,23 @@ function saveEdit(){
   pushPending(false);
 }
 
+/* A typed reading with no meal answer is a permanent row carrying a question
+   nobody can answer later - the connector has no delete. Blocked, not warned. */
+function mealAnswered(d){
+  if(d.bwEntry !== 'typed' || d.meal) return true;
+  toast('Pre-meal or post-meal? One tap.');
+  $('mealrow').scrollIntoView({behavior:'smooth', block:'center'});
+  return false;
+}
+/* 0.1 is the precision the trend is read at; anything finer is scale noise
+   dressed as data. Applied at save, never while typing - normalising mid-entry
+   would fight "75." on its way to "75.4". */
+function normBw(v){
+  const n = parseFloat(v);
+  if(!Number.isFinite(n)) return String(v == null ? '' : v).trim();
+  return String(Math.round(n * 10) / 10);
+}
+
 const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
 
 function saveSession(){
@@ -1213,6 +1305,8 @@ function saveSession(){
   if(!dirty()) return;
   clearTimeout(dt);            // a pending draft write would resurrect this session
   const d = collect();
+  if(!mealAnswered(d)) return;
+  d.bw = normBw(d.bw);
 
   const today = state.sessions.find(x => sameDay(x.ts, Date.now()));
   if(today && confirm('You already logged Session ' + today.type + ' at ' +
@@ -1349,7 +1443,7 @@ $('work').addEventListener('input', e=>{
   const el = e.target;
   if(!el.matches('input')) return;
   delete el.dataset.auto;   // typed over: prefill leaves it alone from here
-  if(el.id === 'bw') paintBwHint();
+  if(el.id === 'bw'){ paintBwHint(); paintMeal(); }
   /* Use the last box and a fresh one appears, so an unplanned set is always one
      tap away and the row is never wider than the work actually done. */
   if(el.matches('.sets input') && el.value.trim()){
@@ -1361,6 +1455,8 @@ $('work').addEventListener('input', e=>{
 $('work').addEventListener('click', e=>{
   const rep = e.target.closest('[data-rep]');
   if(rep){ sameAgain(+rep.dataset.rep); return; }
+  const ml = e.target.closest('[data-meal]');
+  if(ml){ setMeal(ml.dataset.meal); saveDraft(); return; }
   const rm = e.target.closest('[data-x]');
   if(rm) removeExtra(+rm.dataset.x);
 });

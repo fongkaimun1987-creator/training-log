@@ -130,6 +130,42 @@ They are not backfilled into any weight series, for the same reason.
 column, so a carried reading lands there looking like any other. Teaching Notion the difference
 needs an `Entry` property and a worker redeploy - that is the next phase, not this one.
 
+## The weigh-in, and the one question it asks
+
+The weigh-in happens **pre-gym** - on the scale before the session starts, not at a fixed hour.
+That anchors every reading to the same point in the same routine: same scale, same gym, before any
+training. The one thing it doesn't control is the meal.
+
+So once a weight has been **typed**, two buttons appear under it: **Pre-meal** / **Post-meal**.
+One tap, and the session will not save without it.
+
+A lunch and a drink is ~0.5-1.0kg of transit mass. Against the ~0.8-1.2kg spread of gym weighing
+that is absorbed - *as long as the mix of pre- and post-meal readings stays stable*. A drifting mix
+(mostly pre-meal one month, mostly post-meal the next) injects a spurious half-kilo step that is
+arithmetically indistinguishable from real loss. The tap costs a second and buys two things that
+are otherwise unrecoverable: filter the series to pre-meal only, or estimate the offset from the
+data once there are enough of both.
+
+It asks "had you eaten yet", not "within three hours", because three hours ago is a calculation
+and a question you have to work out is one that gets answered carelessly for four weeks.
+
+**It appears only for a typed reading.** A carried number is not a measurement, so its meal would
+describe nothing.
+
+## What reaches the Weight database
+
+Only a typed reading with an answered meal. That is structural, not a convention: the app omits
+`bwEntry` for carried and empty readings, and the relay writes a weight row only when `bwEntry` is
+present. So there is no path that puts an unanswered row in a database with no delete.
+
+Readings are normalised to **0.1kg** at save - `75.43` is stored `75.4`. Applied at save and never
+while typing, or it would fight `75.` on its way to `75.4`.
+
+A session carries its weight row's id once written, so an edit updates that row rather than adding
+a second. And if the weight row fails on its own - an unconnected database answers 404 - the
+session stays **unsynced** and the whole push retries. That is safe because both ids are stored
+first: the retry updates two rows instead of creating them.
+
 ## Backup and restore
 
 **Download backup** writes every session to a `training-log-YYYY-MM-DD.json` file.
